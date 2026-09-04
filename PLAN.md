@@ -49,14 +49,18 @@ to the relevant step below, not a scope change to the locked architecture):
 
 ## Progress
 
+Detailed write-ups of each completed step's technical decisions and a
+function-by-function breakdown live in [docs/](docs/README.md), added as
+each step lands.
+
 - [x] Step 1 — Repo & environment setup
 - [x] Step 2 — Project structure
 - [x] Step 3 — Signal registry (`registry.py`)
 - [x] Step 4 — Synthetic data generator (`data/synthetic.py`)
 - [x] Step 5 — Preprocessing plumbing (`loader.py`, `grid.py`, `staleness.py`,
       `windowing.py`, `scaling.py`)
-- [ ] Step 6 — Partner correlation graph (`correlation.py`)
-- [ ] Step 7 — Branch 1 baseline model chain
+- [x] Step 6 — Partner correlation graph (`correlation.py`)
+- [x] Step 7 — Branch 1 baseline model chain
 - [ ] Step 8 — Threshold calibration (`calibration.py`)
 - [ ] Step 9 — Attribution layer (`attribution/rules.py`)
 - [ ] Step 10 — TCN final model (`models/tcn.py`)

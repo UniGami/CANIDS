@@ -1,7 +1,12 @@
 import numpy as np
 
 from canids.data.grid import align_to_grid
-from canids.data.windowing import build_joint_vector, drop_windows_with_nan, make_windows
+from canids.data.windowing import (
+    build_joint_vector,
+    drop_windows_with_nan,
+    make_forecast_windows,
+    make_windows,
+)
 
 
 def test_build_joint_vector_interleaves_per_registry_layout(two_signal_case):
@@ -51,3 +56,21 @@ def test_drop_windows_with_nan_keeps_only_fully_valid_windows(two_signal_case):
     assert cleaned.shape == (1, 2, registry.vector_size)
     np.testing.assert_allclose(cleaned[0], joint[2:4])
     assert not np.isnan(cleaned).any()
+
+
+def test_make_forecast_windows_splits_context_and_next_tick_values(two_signal_case):
+    df, registry, step = two_signal_case
+    alignment = align_to_grid(df, registry, step=step)
+    joint = build_joint_vector(alignment, registry)
+
+    X, y = make_forecast_windows(joint, registry, sequence_length=1)
+
+    # Only the [tick2, tick3] pair is NaN-free; tick2 is context, tick3's
+    # values (not staleness) are the forecast target.
+    assert X.shape == (1, 1, registry.vector_size)
+    assert y.shape == (1, registry.n_signals)
+    np.testing.assert_allclose(X[0, 0], joint[2])
+
+    x_entry = registry.entry("X", 1)
+    y_entry = registry.entry("Y", 1)
+    np.testing.assert_allclose(y[0], [joint[3, x_entry.value_index], joint[3, y_entry.value_index]])

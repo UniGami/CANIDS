@@ -33,4 +33,15 @@ DEFAULT_CALIBRATION_PERCENTILE = 99.5
 CORRELATION_FOLDS = 5
 CORRELATION_STRENGTH_CUTOFF = 0.5
 
+# --- Branch 1 forecasting models (naive / GRU / TCN) ---
+GRU_HIDDEN_SIZE = 64
+GRU_NUM_LAYERS = 1
+TRAINING_EPOCHS = 50
+BATCH_SIZE = 64
+LEARNING_RATE = 1e-3
+# Per-signal confidence gating (see models/naive.confidence_gate): a model's
+# residual variance must be below this fraction of naive persistence's
+# residual variance on the same signal to count as "meaningfully better."
+CONFIDENCE_TOLERANCE = 0.9
+
 RANDOM_SEED = 42

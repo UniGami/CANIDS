@@ -41,3 +41,20 @@ def drop_windows_with_nan(windows: np.ndarray) -> np.ndarray:
     """
     valid = ~np.isnan(windows).any(axis=(1, 2))
     return windows[valid]
+
+
+def make_forecast_windows(
+    joint_vector: np.ndarray, registry: Registry, sequence_length: int = SEQUENCE_LENGTH
+) -> tuple[np.ndarray, np.ndarray]:
+    """(X, y) pairs for one-step-ahead forecasting, shared by the naive
+    baseline, GRU, and TCN. X is `sequence_length` consecutive ticks
+    (values + staleness, the full joint vector) as forecasting context; y is
+    the VALUE channels only (never staleness — forecasting responsibility is
+    values only, per claude.md) at the single tick immediately following
+    each window.
+    """
+    windows = drop_windows_with_nan(make_windows(joint_vector, sequence_length + 1))
+    X = windows[:, :sequence_length, :]
+    value_indices = [entry.value_index for entry in registry.entries]
+    y = windows[:, sequence_length, value_indices]
+    return X, y
