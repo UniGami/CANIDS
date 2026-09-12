@@ -61,7 +61,7 @@ each step lands.
       `windowing.py`, `scaling.py`)
 - [x] Step 6 — Partner correlation graph (`correlation.py`)
 - [x] Step 7 — Branch 1 baseline model chain
-- [ ] Step 8 — Threshold calibration (`calibration.py`)
+- [x] Step 8 — Threshold calibration (`calibration.py`)
 - [ ] Step 9 — Attribution layer (`attribution/rules.py`)
 - [ ] Step 10 — TCN final model (`models/tcn.py`)
 - [ ] Step 11 — Branch 2: Isolation Forest (`models/isolation_forest.py`)

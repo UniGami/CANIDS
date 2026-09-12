@@ -11,5 +11,6 @@ where they were actually caught (usually by a test), not smoothed over.
 - [04-preprocessing-pipeline.md](04-preprocessing-pipeline.md) — Step 5: `data/loader.py`, `grid.py`, `staleness.py`, `windowing.py`, `scaling.py`.
 - [05-correlation-graph.md](05-correlation-graph.md) — Step 6: `correlation.py`.
 - [06-branch1-baseline-models.md](06-branch1-baseline-models.md) — Step 7: `models/naive.py`, `models/gru_seq2seq.py`.
+- [07-threshold-calibration.md](07-threshold-calibration.md) — Step 8: `calibration.py`.
 
-Later steps (8–13) will get their own files here as they're implemented.
+Later steps (9–13) will get their own files here as they're implemented.

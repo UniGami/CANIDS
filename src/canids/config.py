@@ -28,6 +28,10 @@ SEQUENCE_LENGTH = 50
 # sensitivity report (see calibration.py).
 CALIBRATION_PERCENTILES = [95.0, 97.5, 99.0, 99.5, 99.9]
 DEFAULT_CALIBRATION_PERCENTILE = 99.5
+# CUSUM slack/allowance, as a fraction of each signal's residual std on
+# calibration data -- the standard "half the smallest shift you want to be
+# able to detect" heuristic.
+CUSUM_K_FRACTION = 0.5
 
 # --- Correlation graph ---
 CORRELATION_FOLDS = 5
