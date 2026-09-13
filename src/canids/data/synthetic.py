@@ -273,6 +273,15 @@ def write_attack_window(window: AttackWindow, path: Path) -> None:
     path.write_text(json.dumps(asdict(window), indent=2))
 
 
+def load_attack_window(path: Path) -> AttackWindow:
+    """Round-trips write_attack_window's output. The ground-truth window is
+    the authoritative source for "was this time range attacked" -- unlike a
+    per-row Label, it's defined even for suppression, where the attack IS
+    the absence of rows and there is no Label==1 row to read.
+    """
+    return AttackWindow(**json.loads(Path(path).read_text()))
+
+
 def generate_default_dataset(
     out_dir: Path = SYNTHETIC_DATA_DIR,
     normal_duration: float = 120.0,

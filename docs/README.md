@@ -12,5 +12,15 @@ where they were actually caught (usually by a test), not smoothed over.
 - [05-correlation-graph.md](05-correlation-graph.md) — Step 6: `correlation.py`.
 - [06-branch1-baseline-models.md](06-branch1-baseline-models.md) — Step 7: `models/naive.py`, `models/gru_seq2seq.py`.
 - [07-threshold-calibration.md](07-threshold-calibration.md) — Step 8: `calibration.py`.
+- [08-attribution-layer.md](08-attribution-layer.md) — Step 9: `attribution/rules.py`.
 
-Later steps (9–13) will get their own files here as they're implemented.
+Later steps (10–13) will get their own files here as they're implemented.
+
+## Cross-cutting notes
+
+Not tied to a single numbered step — investigations that span multiple
+already-built pieces.
+
+- [notes-real-data-scaling.md](notes-real-data-scaling.md) — why Branch 1
+  training (Steps 5, 7) doesn't scale to the real SynCAN dataset as built,
+  measured compute/memory costs, and the fix needed before it does.

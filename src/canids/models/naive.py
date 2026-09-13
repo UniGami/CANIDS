@@ -28,6 +28,23 @@ def residuals(X: np.ndarray, y: np.ndarray, registry: Registry) -> np.ndarray:
     return y - predict(X, registry)
 
 
+def residuals_streaming(joint_vector: np.ndarray, registry: Registry, ticks: np.ndarray) -> np.ndarray:
+    """Same residuals as residuals(), but read directly from joint_vector at
+    the given target ticks instead of requiring a pre-built X window array.
+    Naive persistence only ever needs the single tick immediately before
+    each target (predict next = last), so unlike the GRU's
+    sequence_length-wide context this never needed windowing in the first
+    place -- there's no equivalent memory problem to fix here, this just
+    avoids requiring the same pre-built X array train_streaming's callers
+    are trying to avoid building (see models/gru_seq2seq.py, PLAN.md Step 7's
+    confidence-gating comparison against this baseline).
+    """
+    value_indices = [entry.value_index for entry in registry.entries]
+    y = joint_vector[ticks][:, value_indices]
+    pred = joint_vector[ticks - 1][:, value_indices]
+    return y - pred
+
+
 def confidence_gate(
     model_residuals: np.ndarray,
     naive_residuals: np.ndarray,

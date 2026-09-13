@@ -6,6 +6,8 @@ from canids.data.synthetic import (
     SIGNAL_COLUMNS,
     generate_attack,
     generate_normal,
+    load_attack_window,
+    write_attack_window,
 )
 
 
@@ -66,3 +68,26 @@ def test_replay_labels_correlated_partner():
 def test_unknown_attack_type_raises():
     with pytest.raises(ValueError):
         generate_attack("not_a_real_attack", duration_seconds=5.0)
+
+
+def test_attack_window_save_and_load_roundtrip(tmp_path):
+    _, window = generate_attack("replay", duration_seconds=20.0, seed=3, target_id="ID_B", target_slot=1)
+    path = tmp_path / "window.json"
+    write_attack_window(window, path)
+    loaded = load_attack_window(path)
+    assert loaded == window
+
+
+def test_suppression_window_has_no_labeled_rows_but_load_attack_window_still_works(tmp_path):
+    """Suppression's whole signature is the ABSENCE of rows, so it never
+    sets Label == 1 anywhere -- the window sidecar is the only ground truth
+    available for it (see scripts/run_detector.py's _resolve_ground_truth).
+    """
+    df, window = generate_attack("suppression", duration_seconds=20.0, seed=3)
+    assert (df["Label"] == 0).all()
+
+    path = tmp_path / "window.json"
+    write_attack_window(window, path)
+    loaded = load_attack_window(path)
+    assert loaded.attack_type == "suppression"
+    assert loaded.start_time < loaded.end_time

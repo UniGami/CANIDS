@@ -18,6 +18,13 @@ data/processed/
 data/synthetic/*
 !data/synthetic/.gitkeep
 
+# Real SynCAN distribution archive -- large (~380MB), not project source.
+# Keeping it out of src/canids/ long-term and moving it under data/raw/
+# (already ignored above) is recommended, but this rule covers it wherever
+# it currently sits.
+SynCAN-master.zip
+src/canids/SynCAN-master.zip
+
 # Caches / tooling
 .pytest_cache/
 .mypy_cache/

@@ -1,8 +1,8 @@
 import numpy as np
 
 from canids.data.grid import align_to_grid
-from canids.data.windowing import build_joint_vector, make_forecast_windows
-from canids.models.naive import confidence_gate, predict, residuals
+from canids.data.windowing import build_joint_vector, make_forecast_windows, valid_forecast_ticks
+from canids.models.naive import confidence_gate, predict, residuals, residuals_streaming
 
 
 def test_naive_predict_is_last_tick_values(two_signal_case):
@@ -53,3 +53,16 @@ def test_confidence_gate_is_per_signal():
     model_res = np.stack([rng.normal(0, 1.0, 500), rng.normal(0, 20.0, 500)], axis=1)
     gate = confidence_gate(model_res, naive_res, tolerance=0.9)
     np.testing.assert_array_equal(gate, [True, False])
+
+
+def test_residuals_streaming_matches_windowed_residuals(two_signal_case):
+    df, registry, step = two_signal_case
+    alignment = align_to_grid(df, registry, step=step)
+    joint = build_joint_vector(alignment, registry)
+    X, y = make_forecast_windows(joint, registry, sequence_length=1)
+    windowed_res = residuals(X, y, registry)
+
+    ticks = valid_forecast_ticks(joint, sequence_length=1)
+    streaming_res = residuals_streaming(joint, registry, ticks)
+
+    np.testing.assert_allclose(streaming_res, windowed_res)
