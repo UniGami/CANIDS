@@ -15,11 +15,14 @@ Usage:
     python scripts/inspect_pipeline.py --normal-csv data/raw/syncan_train_1.csv
     python scripts/inspect_pipeline.py --stages grid,staleness --signal ID_B_sig1
     python scripts/inspect_pipeline.py --train --test-csv data/synthetic/attack_suppression.csv
+    python scripts/inspect_pipeline.py --train --test-csv data/synthetic/attack_suppression.csv \
+        --model-path models/gru_syncan_train1.pt
 """
 
 from __future__ import annotations
 
 import argparse
+import time
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -34,17 +37,40 @@ from canids.data.staleness import compute_staleness
 from canids.data.synthetic import load_attack_window
 from canids.data.windowing import build_joint_vector, valid_forecast_ticks
 from canids.models import naive
-from canids.models.gru_seq2seq import GRUForecaster, predict_streaming, train_streaming
+from canids.models.gru_seq2seq import GRUForecaster, load_model, predict_streaming, save_model, train_streaming
 from canids.registry import Registry, build_registry
 
 ALL_STAGES = ["raw", "grid", "staleness", "windowing", "scaling"]
 MAX_SIGNALS_PLOTTED = 8  # cap small-multiples so real SynCAN's 20 signals stay legible
+AUTO_ZOOM_SECONDS = 20.0  # cap for the auto-zoomed predicted/actual plot -- the ground-truth
+# attack window itself can span most of a real SynCAN test file (attacks recur many times
+# across a long recording), so zooming to its full extent can still overplot into a smear
 
 
 def _print_header(title: str) -> None:
     print()
     print(title)
     print("-" * len(title))
+
+
+def _savefig(fig, out_path: Path, retries: int = 3, delay: float = 0.5) -> None:
+    """fig.savefig(), retrying past transient Windows file locks.
+
+    On Windows, PIL's Image.save() opens the destination in "w+b" (truncate)
+    mode; if another process briefly holds a read handle on it right when we
+    overwrite an existing PNG from a prior run (antivirus scan, Explorer/IDE
+    thumbnailing), Windows raises a sharing violation that surfaces as
+    OSError errno 22 rather than the usual PermissionError -- almost always
+    gone a few hundred ms later.
+    """
+    for attempt in range(retries):
+        try:
+            fig.savefig(out_path, dpi=150)
+            return
+        except OSError:
+            if attempt == retries - 1:
+                raise
+            time.sleep(delay)
 
 
 def _select_signals(registry: Registry, signal_arg: str | None) -> list:
@@ -120,7 +146,7 @@ def stage_grid(df, registry: Registry, step: float, signal_arg: str | None, out_
     fig.suptitle(f"Grid Alignment: raw transmissions vs. forward-filled grid{range_note}")
     fig.tight_layout()
     out_path = out_dir / "grid_alignment.png"
-    fig.savefig(out_path, dpi=150)
+    _savefig(fig, out_path)
     plt.close(fig)
     print(f"\nsaved: {out_path}")
     return alignment
@@ -146,7 +172,7 @@ def stage_staleness(alignment, registry: Registry, signal_arg: str | None, out_d
     fig.suptitle(f"Staleness Counters (ticks since last genuine transmission){range_note}")
     fig.tight_layout()
     out_path = out_dir / "staleness.png"
-    fig.savefig(out_path, dpi=150)
+    _savefig(fig, out_path)
     plt.close(fig)
     print(f"\nsaved: {out_path}")
     return staleness
@@ -192,7 +218,7 @@ def stage_scaling(joint, registry: Registry, signal_arg: str | None, out_dir: Pa
     fig.suptitle("Scaling: value distribution before vs. after")
     fig.tight_layout()
     out_path = out_dir / "scaling.png"
-    fig.savefig(out_path, dpi=150)
+    _savefig(fig, out_path)
     plt.close(fig)
     print(f"\nsaved: {out_path}")
 
@@ -200,7 +226,7 @@ def stage_scaling(joint, registry: Registry, signal_arg: str | None, out_dir: Pa
 def stage_train_predict(
     normal_csv: Path, test_csv: Path, registry: Registry, step: float, sequence_length: int,
     epochs: int, batch_size: int, percentile: float, seed: int, signal_arg: str | None, out_dir: Path,
-    time_range=None,
+    time_range=None, model_path: Path | None = None,
 ):
     normal_df = load_normal(normal_csv)
     train_df, val_df = split_train_val(normal_df)
@@ -210,21 +236,29 @@ def stage_train_predict(
     val_joint = build_joint_vector(val_alignment, registry)
     val_ticks = valid_forecast_ticks(val_joint, sequence_length=sequence_length)
 
-    _print_header("Model Stage: Training GRU")
-    model = GRUForecaster(vector_size=registry.vector_size, n_signals=registry.n_signals)
-    history = train_streaming(
-        model, registry, train_joint, val_joint,
-        sequence_length=sequence_length, epochs=epochs, batch_size=batch_size,
-        seed=seed, early_stopping_patience=5,
-    )
-    print(f"ran {len(history.train_loss)}/{epochs} epochs -- final train_loss={history.train_loss[-1]:.5f}  val_loss={history.val_loss[-1]:.5f}")
+    _print_header("Model Stage")
+    if model_path and model_path.exists():
+        print(f"loading model from {model_path}")
+        model = load_model(model_path)
+    else:
+        print("training GRU (no existing model to load)")
+        model = GRUForecaster(vector_size=registry.vector_size, n_signals=registry.n_signals)
+        history = train_streaming(
+            model, registry, train_joint, val_joint,
+            sequence_length=sequence_length, epochs=epochs, batch_size=batch_size,
+            seed=seed, early_stopping_patience=5,
+        )
+        print(f"ran {len(history.train_loss)}/{epochs} epochs -- final train_loss={history.train_loss[-1]:.5f}  val_loss={history.val_loss[-1]:.5f}")
+        if model_path:
+            save_model(model, model_path)
+            print(f"saved model to {model_path}")
 
     y_val, pred_val = predict_streaming(model, registry, val_joint, val_ticks, sequence_length, batch_size)
     val_residuals = y_val - pred_val
     naive_val_residuals = naive.residuals_streaming(val_joint, registry, val_ticks)
     confidence_mask = naive.confidence_gate(val_residuals, naive_val_residuals)
     val_staleness = compute_staleness(val_alignment)
-    calibration = calibrate(val_residuals, val_staleness, val_alignment.updated, registry, percentile=percentile)
+    calibration = calibrate(val_residuals, val_alignment.values, val_staleness, val_alignment.updated, registry, percentile=percentile)
 
     test_df = load_attack(test_csv)
     test_alignment = align_to_grid(test_df, registry, step=step)
@@ -245,6 +279,25 @@ def stage_train_predict(
     if gt_range:
         print(f"ground-truth attack window: t=[{gt_range[0]:.2f}, {gt_range[1]:.2f}]")
     print(f"ticks evaluated: {len(tick_indices)}   ground-truth attack ticks: {int(gt_at_ticks.sum())}")
+
+    if time_range is None:
+        if gt_range is not None:
+            duration = gt_range[1] - gt_range[0]
+            if duration <= AUTO_ZOOM_SECONDS:
+                pad = max((AUTO_ZOOM_SECONDS - duration) / 2, 2.0)
+                time_range = (gt_range[0] - pad, gt_range[1] + pad)
+            else:
+                # ground-truth attack rows span most of the file (e.g. an attack that
+                # recurs throughout a long recording) -- show a readable slice starting
+                # at the first attack tick instead of the whole (unplottable) extent.
+                lead_in = 2.0
+                time_range = (gt_range[0] - lead_in, gt_range[0] - lead_in + AUTO_ZOOM_SECONDS)
+        else:
+            time_range = (test_times[0], min(test_times[0] + AUTO_ZOOM_SECONDS, test_times[-1]))
+        print(
+            f"no --time-range given -- auto-zoomed to t=[{time_range[0]:.2f}, {time_range[1]:.2f}] "
+            f"(pass --time-range to override)"
+        )
 
     mask = _time_slice(test_times, time_range)
     signals = _select_signals(registry, signal_arg)
@@ -268,7 +321,7 @@ def stage_train_predict(
     fig.suptitle(f"Predicted vs. Actual vs. Residual -- {test_csv.name}{range_note}")
     fig.tight_layout()
     out_path = out_dir / f"predictions_{test_csv.stem}.png"
-    fig.savefig(out_path, dpi=150)
+    _savefig(fig, out_path)
     plt.close(fig)
     print(f"\nsaved: {out_path}")
 
@@ -285,7 +338,12 @@ def main() -> None:
     )
     parser.add_argument("--grid-step", type=float, default=GRID_STEP_SECONDS)
     parser.add_argument("--sequence-length", type=int, default=SEQUENCE_LENGTH)
-    parser.add_argument("--train", action="store_true", help="also train GRU and plot predicted/actual/residual on --test-csv")
+    parser.add_argument("--train", action="store_true", help="also train/load GRU and plot predicted/actual/residual on --test-csv")
+    parser.add_argument(
+        "--model-path", type=Path, default=None,
+        help="with --train: load a previously-trained model from here if it exists (skipping training); "
+        "otherwise train fresh and save it here for reuse next time",
+    )
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--percentile", type=float, default=DEFAULT_CALIBRATION_PERCENTILE)
@@ -328,7 +386,7 @@ def main() -> None:
         stage_train_predict(
             args.normal_csv, args.test_csv, registry, args.grid_step, args.sequence_length,
             args.epochs, args.batch_size, args.percentile, args.seed, args.signal, out_dir,
-            time_range,
+            time_range, args.model_path,
         )
 
 
