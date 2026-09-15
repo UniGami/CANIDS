@@ -139,42 +139,72 @@ subtly wrong for every signal.
 ## Function-by-function breakdown
 
 - **`CalibrationResult(percentile, residual_thresholds, staleness_thresholds,
-  cusum_k, cusum_thresholds, cusum_mean)`** — dataclass bundling one full
-  calibrated threshold set (all `(n_signals,)` arrays, ordered by
-  `registry.signal_index` like everything else in this codebase). `save`
-  round-trips it to JSON automatically via `asdict`; `load` reads every
-  field with a plain dict lookup (no default fallback), so an old artifact
-  missing a field fails loudly instead of silently reconstructing a subtly
-  wrong result.
+  cusum_k, cusum_thresholds, cusum_mean, value_range_low, value_range_high)`**
+  — dataclass bundling one full calibrated threshold set (all
+  `(n_signals,)` arrays, ordered by `registry.signal_index` like everything
+  else in this codebase). `save` round-trips it to JSON automatically via
+  `asdict`; `load` reads every field with a plain dict lookup (no default
+  fallback), so an old artifact missing a field fails loudly instead of
+  silently reconstructing a subtly wrong result.
 - **`calibrate_residual_thresholds(residuals, percentile)`** —
   `np.percentile(np.abs(residuals), percentile, axis=0)`: the per-signal
   magnitude a residual has to exceed to count as unusual.
 - **`calibrate_staleness_thresholds(staleness, updated, percentile)`** — the
   gap-peak extraction and percentile described above, with the `1.0` default
   for signals with no observed gap.
+- **`calibrate_value_range(values, low_percentile=0.5, high_percentile=99.5)`**
+  — per signal, `(low, high)` = the given percentiles of that signal's own
+  observed values (NaN-aware, skipping `data/grid.py`'s warm-up-only NaN
+  prefix). Feeds attribution's (Step 9) normal-value-range gate — a
+  complementary, real-data-motivated false-positive mitigation (see
+  `docs/notes-false-positive-investigation.md`), not one of claude.md's
+  original three threshold types.
 - **`cusum_statistic(x, mean, k)`** — the explicit CUSUM recursion over a 1D
-  array, returned as a same-length array of running statistic values.
-  Written as a plain Python loop (not vectorized) because each step
-  genuinely depends on the previous one; kept as its own function so
-  attribution's drift rule (Step 9) can reuse the identical recursion on
-  live data rather than reimplementing it.
+  array against one FIXED mean for the whole stream, returned as a
+  same-length array of running statistic values. Written as a plain Python
+  loop (not vectorized) because each step genuinely depends on the previous
+  one. Still used as-is for calibration's own `h` computation (a fixed
+  reference is the right thing to calibrate "how unusual" against).
+- **`adaptive_cusum_statistic(x, initial_mean, k, decay)`** — same
+  recursion, but the reference mean itself adapts via EWMA
+  (`mu_t = decay*x_t + (1-decay)*mu_{t-1}`) instead of staying fixed;
+  `decay=0.0` is an exact no-op reproducing `cusum_statistic`. Used at
+  DETECTION time by attribution's drift rule (Step 9) — real-data testing
+  found a fixed mean lets a long-lived but entirely normal driving regime's
+  small residual bias accumulate for as long as the regime lasts (observed:
+  up to ~10 minutes), since it has no way to tell that apart from a
+  genuine attack; see `docs/notes-false-positive-investigation.md`.
 - **`calibrate_cusum_thresholds(residuals, percentile, residual_thresholds,
   k_fraction)`** — for each signal: derives `k` from that signal's
   `residual_thresholds` entry (**not** residual std — see the correction
   above), records that signal's actual residual mean, runs
   `cusum_statistic` against that mean, and takes the given percentile of
   the result as `h`. Returns `(k, h, mean)` as a triple of `(n_signals,)`
-  arrays -- `mean` is what `detect_drift` (Step 9) must reuse at detection
-  time, not assume as 0.
-- **`calibrate(residuals, staleness, updated, registry, percentile,
-  k_fraction)`** — the orchestrator: validates shapes against the registry,
-  computes `residual_thresholds` first (so it's available to
-  `calibrate_cusum_thresholds`), then calls the other two calibration
-  functions, and returns one `CalibrationResult`.
-- **`sensitivity_sweep(residuals, staleness, updated, registry, percentiles,
-  k_fraction)`** — calls `calibrate` once per percentile in
+  arrays -- `mean` is what `detect_drift` (Step 9) must reuse (as the
+  adaptive recursion's *starting point*) at detection time, not assume
+  as 0.
+- **`calibrate(residuals, values, staleness, updated, registry, percentile,
+  k_fraction, value_range_low_percentile, value_range_high_percentile)`**
+  — the orchestrator: validates shapes against the registry, computes
+  `residual_thresholds` first (so it's available to
+  `calibrate_cusum_thresholds`), calls the other calibration functions
+  (including `calibrate_value_range` on `values`, the one input that isn't
+  windowed the way `residuals` is -- see below), and returns one
+  `CalibrationResult`.
+- **`sensitivity_sweep(residuals, values, staleness, updated, registry,
+  percentiles, k_fraction)`** — calls `calibrate` once per percentile in
   `config.CALIBRATION_PERCENTILES`, returning `{percentile:
   CalibrationResult}` for Step 13's sensitivity report.
+
+**`values` is the full (non-windowed) validation grid, not aligned to
+`residuals`' ticks.** Unlike `staleness`/`updated`, which the codebase's
+convention already required as the full grid, `values` only needs its own
+marginal per-signal distribution — computing "what does this signal
+normally look like" has no dependency on which specific ticks a
+forecasting model produced a residual for, so `calibrate()` doesn't
+require row-count alignment between `residuals` and `values` the way
+`detect_*` functions require alignment between `residuals`/`values`/
+`staleness` at detection time.
 
 ## Bug found while writing the tests
 

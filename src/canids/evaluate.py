@@ -28,6 +28,7 @@ from canids.calibration import CalibrationResult, sensitivity_sweep
 from canids.config import (
     BATCH_SIZE,
     CALIBRATION_PERCENTILES,
+    CUSUM_ADAPTIVE_DECAY,
     DRIFT_MIN_PERSISTENCE_TICKS,
     GRID_STEP_SECONDS,
     PLATEAU_MIN_PERSISTENCE_TICKS,
@@ -183,6 +184,8 @@ def evaluate_attack_csv(
     confidence_mask: np.ndarray | None = None,
     drift_min_persistence_ticks: int = DRIFT_MIN_PERSISTENCE_TICKS,
     plateau_min_persistence_ticks: int = PLATEAU_MIN_PERSISTENCE_TICKS,
+    drift_cusum_decay: float = CUSUM_ADAPTIVE_DECAY,
+    value_range_gate: bool = True,
 ) -> tuple[AttributionResult, np.ndarray, np.ndarray]:
     """Run the full detect + attribute pipeline against one attack CSV,
     reusing predict_streaming (never materializes a full window array, see
@@ -192,10 +195,10 @@ def evaluate_attack_csv(
     attribution_result (see resolve_ground_truth); tick_indices are the raw
     tick indices into this CSV's own grid, for mapping back to timestamps.
 
-    `drift_min_persistence_ticks`/`plateau_min_persistence_ticks` pass
-    through to attribute()'s hysteresis/debounce filtering (see
-    attribution/rules.py's require_persistence) -- the real-data
-    false-positive mitigation (docs/notes-real-data-scaling.md).
+    `drift_min_persistence_ticks`/`plateau_min_persistence_ticks`,
+    `drift_cusum_decay`, and `value_range_gate` all pass through to
+    attribute()'s real-data false-positive mitigations -- see
+    docs/notes-false-positive-investigation.md.
     """
     test_df = load_attack(attack_csv_path)
     test_alignment = align_to_grid(test_df, registry, step=grid_step)
@@ -216,6 +219,8 @@ def evaluate_attack_csv(
         confidence_mask=confidence_mask,
         drift_min_persistence_ticks=drift_min_persistence_ticks,
         plateau_min_persistence_ticks=plateau_min_persistence_ticks,
+        drift_cusum_decay=drift_cusum_decay,
+        value_range_gate=value_range_gate,
     )
 
     gt_full, _source = resolve_ground_truth(attack_csv_path, test_df, test_alignment.times, grid_step)
@@ -226,6 +231,7 @@ def evaluate_attack_csv(
 
 def sensitivity_report(
     val_residuals: np.ndarray,
+    val_values: np.ndarray,
     val_staleness: np.ndarray,
     val_updated: np.ndarray,
     registry: Registry,
@@ -240,6 +246,8 @@ def sensitivity_report(
     grid_step: float = GRID_STEP_SECONDS,
     drift_min_persistence_ticks: int = DRIFT_MIN_PERSISTENCE_TICKS,
     plateau_min_persistence_ticks: int = PLATEAU_MIN_PERSISTENCE_TICKS,
+    drift_cusum_decay: float = CUSUM_ADAPTIVE_DECAY,
+    value_range_gate: bool = True,
 ) -> dict[float, DetectionMetrics]:
     """Detection metrics at every percentile calibration.sensitivity_sweep
     produces -- this is where sensitivity_sweep (built in Step 8, unit
@@ -249,13 +257,14 @@ def sensitivity_report(
     should expect this to take multiple times as long as one detection
     pass).
     """
-    sweep = sensitivity_sweep(val_residuals, val_staleness, val_updated, registry, percentiles=percentiles)
+    sweep = sensitivity_sweep(val_residuals, val_values, val_staleness, val_updated, registry, percentiles=percentiles)
     report: dict[float, DetectionMetrics] = {}
     for percentile, calibration in sweep.items():
         result, ground_truth, _ = evaluate_attack_csv(
             model, registry, calibration, correlation, attack_csv_path,
             sequence_length, batch_size, grid_step, confidence_mask,
             drift_min_persistence_ticks, plateau_min_persistence_ticks,
+            drift_cusum_decay, value_range_gate,
         )
         detector_flag = detector_flags_from_attribution(result)
         report[percentile] = detection_metrics(detector_flag, ground_truth, attack_type, percentile)
@@ -280,19 +289,22 @@ def evaluate_all(
     batch_size: int = BATCH_SIZE,
     grid_step: float = GRID_STEP_SECONDS,
     val_residuals: np.ndarray | None = None,
+    val_values: np.ndarray | None = None,
     val_staleness: np.ndarray | None = None,
     val_updated: np.ndarray | None = None,
     sweep_percentiles: list[float] = CALIBRATION_PERCENTILES,
     drift_min_persistence_ticks: int = DRIFT_MIN_PERSISTENCE_TICKS,
     plateau_min_persistence_ticks: int = PLATEAU_MIN_PERSISTENCE_TICKS,
+    drift_cusum_decay: float = CUSUM_ADAPTIVE_DECAY,
+    value_range_gate: bool = True,
 ) -> EvaluationResult:
     """Orchestrator: runs evaluate_attack_csv + detection_metrics +
     rule_collision_matrix across every entry in attack_csvs (e.g.
     {"replay": Path(...), "plateau": Path(...), ...}), accumulating one
-    combined confusion matrix. If val_residuals/val_staleness/val_updated
-    are given, also runs sensitivity_report per attack type -- omitted by
-    default since it re-runs detection once per percentile, real extra work
-    the caller should opt into.
+    combined confusion matrix. If val_residuals/val_values/val_staleness/
+    val_updated are given, also runs sensitivity_report per attack type --
+    omitted by default since it re-runs detection once per percentile, real
+    extra work the caller should opt into.
     """
     per_attack_metrics: list[DetectionMetrics] = []
     rule_confusion: dict[tuple[str, str], int] = {}
@@ -303,6 +315,7 @@ def evaluate_all(
             model, registry, calibration, correlation, path,
             sequence_length, batch_size, grid_step, confidence_mask,
             drift_min_persistence_ticks, plateau_min_persistence_ticks,
+            drift_cusum_decay, value_range_gate,
         )
         detector_flag = detector_flags_from_attribution(result)
         per_attack_metrics.append(detection_metrics(detector_flag, ground_truth, attack_type, calibration.percentile))
@@ -313,9 +326,10 @@ def evaluate_all(
 
         if val_residuals is not None:
             sensitivity[attack_type] = sensitivity_report(
-                val_residuals, val_staleness, val_updated, registry, model, correlation, path, attack_type,
+                val_residuals, val_values, val_staleness, val_updated, registry, model, correlation, path, attack_type,
                 confidence_mask, sweep_percentiles, sequence_length, batch_size, grid_step,
                 drift_min_persistence_ticks, plateau_min_persistence_ticks,
+                drift_cusum_decay, value_range_gate,
             )
 
     return EvaluationResult(per_attack_metrics=per_attack_metrics, rule_confusion=rule_confusion, sensitivity=sensitivity)

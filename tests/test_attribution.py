@@ -8,6 +8,7 @@ from canids.attribution.rules import (
     detect_plateau,
     detect_replay,
     detect_suppression,
+    in_normal_value_range,
     require_persistence,
 )
 from canids.calibration import CalibrationResult, calibrate_staleness_thresholds, cusum_statistic
@@ -25,6 +26,8 @@ def _calibration(
     cusum_k=None,
     cusum_thresholds=None,
     cusum_mean=None,
+    value_range_low=None,
+    value_range_high=None,
 ):
     return CalibrationResult(
         percentile=99.5,
@@ -33,6 +36,10 @@ def _calibration(
         cusum_k=np.full(n_signals, 0.5) if cusum_k is None else np.asarray(cusum_k, dtype=float),
         cusum_thresholds=np.full(n_signals, 5.0) if cusum_thresholds is None else np.asarray(cusum_thresholds, dtype=float),
         cusum_mean=np.zeros(n_signals) if cusum_mean is None else np.asarray(cusum_mean, dtype=float),
+        # width way over VALUE_RANGE_GATE_MAX_WIDTH by default, so the value-range gate is a true no-op
+        # (its `applies` mask is False everywhere) unless a test explicitly overrides these to test it.
+        value_range_low=np.full(n_signals, -1e9) if value_range_low is None else np.asarray(value_range_low, dtype=float),
+        value_range_high=np.full(n_signals, 1e9) if value_range_high is None else np.asarray(value_range_high, dtype=float),
     )
 
 
@@ -86,6 +93,33 @@ def test_detect_drift_uses_calibration_mean_not_zero():
     calibration_wrong_mean = _calibration(n_signals=1, cusum_k=[1.0], cusum_thresholds=[5.0], cusum_mean=[0.0])
     fired_wrong = detect_drift(residuals, calibration_wrong_mean)
     assert fired_wrong[-1, 0]  # same data, wrong reference point -> spuriously fires (the bug this fix removes)
+
+
+def test_detect_drift_cusum_decay_defaults_to_fixed_mean():
+    # cusum_decay defaults to 0.0 -- a no-op, exactly matching the
+    # fixed-mean behavior above. Existing detect_drift tests rely on this.
+    calibration = _calibration(n_signals=1, cusum_k=[1.0], cusum_thresholds=[5.0], cusum_mean=[0.0])
+    residuals = np.array([[0.0], [0.0], [0.0], [5.0], [5.0], [5.0]])
+    fired_default = detect_drift(residuals, calibration)
+    fired_explicit_zero = detect_drift(residuals, calibration, cusum_decay=0.0)
+    np.testing.assert_array_equal(fired_default, fired_explicit_zero)
+
+
+def test_detect_drift_adaptive_decay_forgets_sustained_normal_bias():
+    """Regression test for the real-data false-positive finding (see
+    docs/notes-false-positive-investigation.md): a small, sustained residual
+    bias (a legitimate driving regime, not an attack) that would trigger
+    the fixed-mean CUSUM forever should get absorbed by a nonzero
+    cusum_decay, so the drift rule stops firing on it.
+    """
+    calibration = _calibration(n_signals=1, cusum_k=[0.005], cusum_thresholds=[3.0], cusum_mean=[0.0])
+    residuals = np.full((3000, 1), 0.02)  # small, constant, sustained bias
+
+    fired_fixed = detect_drift(residuals, calibration, cusum_decay=0.0)
+    assert fired_fixed[-1, 0]  # fixed mean never resets -> still firing at the end
+
+    fired_adaptive = detect_drift(residuals, calibration, cusum_decay=0.01)
+    assert not fired_adaptive[-1, 0]  # adaptive mean caught up -> no longer firing
 
 
 def test_require_persistence_is_noop_below_threshold_of_one():
@@ -161,6 +195,45 @@ def test_detect_plateau_persistence_suppresses_short_spike_keeps_sustained_plate
     residuals_long = np.full(21, 2.0)[:, None]
     fired_sustained = detect_plateau(values_long, residuals_long, calibration, min_persistence_ticks=10)
     assert fired_sustained.any()
+
+
+def test_in_normal_value_range_true_only_within_bounds_and_narrow_enough():
+    # signal 0: narrow range [0.3, 0.7] (width 0.4, well under max_range_width) -- gate applies.
+    # signal 1: wide range [0.0, 1.0] (width 1.0, at/over max_range_width) -- gate never applies.
+    calibration = _calibration(n_signals=2, value_range_low=[0.3, 0.0], value_range_high=[0.7, 1.0])
+    values = np.array([[0.5, 0.5], [0.1, 0.1], [0.9, 0.9]])
+    out = in_normal_value_range(values, calibration, max_range_width=0.8)
+    np.testing.assert_array_equal(out[:, 0], [True, False, False])  # in [0.3,0.7] only at tick 0
+    np.testing.assert_array_equal(out[:, 1], [False, False, False])  # never applies -- range too wide
+
+
+def test_detect_drift_value_range_gate_suppresses_only_narrow_range_signal():
+    """Regression test for the real-data finding (see
+    docs/notes-false-positive-investigation.md): a value comfortably within
+    a NARROW calibrated range should be suppressed by the gate; the same
+    residual/CUSUM signature on a WIDE-range signal must NOT be suppressed,
+    since "in range" carries no real information there.
+    """
+    calibration = _calibration(
+        n_signals=2, cusum_k=[1.0, 1.0], cusum_thresholds=[3.0, 3.0], cusum_mean=[0.0, 0.0],
+        value_range_low=[0.3, 0.0], value_range_high=[0.7, 1.0],
+    )
+    residuals = np.full((6, 2), 5.0)  # same large sustained residual on both signals
+    values = np.full((6, 2), 0.5)  # same in-range-looking value on both signals
+
+    fired_ungated = detect_drift(residuals, calibration, values=values, value_range_gate=False)
+    assert fired_ungated[-1, 0] and fired_ungated[-1, 1]  # both fire without the gate
+
+    fired_gated = detect_drift(residuals, calibration, values=values, value_range_gate=True)
+    assert not fired_gated[-1, 0]  # signal 0: narrow range, 0.5 is comfortably inside -> suppressed
+    assert fired_gated[-1, 1]  # signal 1: wide range -> gate never applies -> still fires
+
+
+def test_detect_drift_value_range_gate_requires_values():
+    calibration = _calibration(n_signals=1, cusum_k=[1.0], cusum_thresholds=[3.0], cusum_mean=[0.0])
+    residuals = np.full((3, 1), 5.0)
+    with pytest.raises(ValueError):
+        detect_drift(residuals, calibration, value_range_gate=True)
 
 
 def test_detect_replay_requires_correlated_partner_spike():

@@ -32,6 +32,7 @@ from pathlib import Path
 
 from canids.calibration import calibrate
 from canids.config import (
+    CUSUM_ADAPTIVE_DECAY,
     DEFAULT_CALIBRATION_PERCENTILE,
     DRIFT_MIN_PERSISTENCE_TICKS,
     GRID_STEP_SECONDS,
@@ -99,6 +100,17 @@ def main() -> None:
         "--plateau-persistence-ticks", type=int, default=PLATEAU_MIN_PERSISTENCE_TICKS,
         help="plateau rule hysteresis/debounce, same mechanism as --drift-persistence-ticks",
     )
+    parser.add_argument(
+        "--drift-cusum-decay", type=float, default=CUSUM_ADAPTIVE_DECAY,
+        help="EWMA decay rate for drift's adaptive CUSUM reference mean (see "
+        "attribution/rules.py's adaptive_cusum_statistic); 0.0 disables adaptation "
+        "(fixed mean, the original behavior)",
+    )
+    parser.add_argument(
+        "--no-value-range-gate", action="store_true",
+        help="disable the normal-value-range gate on drift/plateau (see "
+        "attribution/rules.py's in_normal_value_range); on by default",
+    )
     parser.add_argument("--val-fraction", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=RANDOM_SEED)
     parser.add_argument("--grid-step", type=float, default=GRID_STEP_SECONDS)
@@ -146,9 +158,12 @@ def main() -> None:
     confidence_mask = naive.confidence_gate(val_residuals, naive_val_residuals)
 
     val_staleness = compute_staleness(val_alignment)
-    calibration = calibrate(val_residuals, val_staleness, val_alignment.updated, registry, percentile=args.percentile)
+    calibration = calibrate(
+        val_residuals, val_alignment.values, val_staleness, val_alignment.updated, registry, percentile=args.percentile
+    )
     print(f"calibrated at percentile={args.percentile}")
     print(f"persistence: drift={args.drift_persistence_ticks} ticks  plateau={args.plateau_persistence_ticks} ticks")
+    print(f"drift cusum_decay={args.drift_cusum_decay}  value_range_gate={not args.no_value_range_gate}")
 
     full_normal_alignment = align_to_grid(normal_df, registry, step=args.grid_step)
     full_normal_joint = build_joint_vector(full_normal_alignment, registry)
@@ -168,10 +183,13 @@ def main() -> None:
         model, registry, calibration, correlation, attack_csvs, confidence_mask=confidence_mask,
         sequence_length=args.sequence_length, batch_size=args.batch_size, grid_step=args.grid_step,
         val_residuals=val_residuals if args.sweep else None,
+        val_values=val_alignment.values if args.sweep else None,
         val_staleness=val_staleness if args.sweep else None,
         val_updated=val_alignment.updated if args.sweep else None,
         drift_min_persistence_ticks=args.drift_persistence_ticks,
         plateau_min_persistence_ticks=args.plateau_persistence_ticks,
+        drift_cusum_decay=args.drift_cusum_decay,
+        value_range_gate=not args.no_value_range_gate,
     )
 
     _print_header("Per-attack-type detection metrics")

@@ -175,7 +175,9 @@ def small_pipeline_fixture(tmp_path_factory):
     y_val, pred_val = predict_streaming(model, registry, val_joint, val_ticks, sequence_length=10, batch_size=32)
     val_residuals = y_val - pred_val
     val_staleness = compute_staleness(val_alignment)
-    calibration = calibrate(val_residuals, val_staleness, val_alignment.updated, registry, percentile=99.0)
+    calibration = calibrate(
+        val_residuals, val_alignment.values, val_staleness, val_alignment.updated, registry, percentile=99.0
+    )
 
     full_joint = build_joint_vector(align_to_grid(normal_df, registry, step=0.01), registry)
     correlation = build_correlation_graph(full_joint, registry)

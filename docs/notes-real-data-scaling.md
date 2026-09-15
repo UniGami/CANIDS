@@ -315,6 +315,16 @@ aren't caught by any rule. Out of scope for this fix; worth a look
 separately, since it's a detection-coverage gap rather than a
 false-positive problem.
 
+**This is where this doc's false-positive thread ends** — Option A's real
+`k=0.2`/`k=1.0` results, the resulting OR-across-20-signals fusion
+saturation finding, and the full follow-up investigation (real attack
+duration/magnitude, CUSUM detection latency, spurious-excursion duration on
+normal data, and the resulting persistence + adaptive CUSUM mean + normal-
+value-range gate fixes) continue in
+[notes-false-positive-investigation.md](notes-false-positive-investigation.md),
+kept separate since it's a detection-quality investigation rather than a
+scaling/compute one.
+
 Verified end-to-end against both the synthetic dataset and a real SynCAN
 slice (`scripts/prepare_syncan_data.py` output) after implementing 1-4: the
 full pipeline (train → calibrate → correlation graph → detect → attribute)

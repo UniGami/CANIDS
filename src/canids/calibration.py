@@ -36,6 +36,11 @@ class CalibrationResult:
     # attribution/rules.py's detect_drift() must re-run CUSUM against this SAME mean, not an assumed 0.0,
     # or the live statistic accumulates deviations from a different reference point than cusum_thresholds
     # was calibrated against.
+    value_range_low: np.ndarray  # (n_signals,) -- per-signal normal-value-range bounds from normal training
+    value_range_high: np.ndarray  # data (see calibrate_value_range); a complementary, PARTIAL gate on
+    # drift/plateau -- confirmed on real data to help signals whose false positives are tied to an
+    # unusual-but-in-range value, and to do nothing for signals whose normal range already spans nearly
+    # their whole scale (see docs/notes-false-positive-investigation.md).
 
     def save(self, path: Path) -> None:
         payload = {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in asdict(self).items()}
@@ -51,6 +56,8 @@ class CalibrationResult:
             cusum_k=np.array(payload["cusum_k"]),
             cusum_thresholds=np.array(payload["cusum_thresholds"]),
             cusum_mean=np.array(payload["cusum_mean"]),
+            value_range_low=np.array(payload["value_range_low"]),
+            value_range_high=np.array(payload["value_range_high"]),
         )
 
 
@@ -61,6 +68,32 @@ def calibrate_residual_thresholds(residuals: np.ndarray, percentile: float) -> n
     evidence of an attack.
     """
     return np.percentile(np.abs(residuals), percentile, axis=0)
+
+
+def calibrate_value_range(
+    values: np.ndarray, low_percentile: float = 0.5, high_percentile: float = 99.5
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-signal [low, high] normal-value-range bounds from normal
+    validation data -- NaN-aware (data/grid.py's warm-up-only NaN prefix
+    convention), so a signal's own range is computed from its own actually-
+    observed values. Used by drift/plateau as a complementary, PARTIAL
+    false-positive gate (see attribution/rules.py's detect_drift/
+    detect_plateau `value_range_*` parameters): a value comfortably within
+    this range is unlikely to reflect an attack even if its residual looks
+    large, since most SynCAN attacks push a signal away from its normal
+    operating envelope. Confirmed on real data to do nothing for signals
+    whose normal range already spans nearly their whole scale -- see
+    docs/notes-false-positive-investigation.md.
+    """
+    n_signals = values.shape[1]
+    low = np.zeros(n_signals)
+    high = np.zeros(n_signals)
+    for j in range(n_signals):
+        col = values[:, j]
+        col = col[~np.isnan(col)]
+        low[j] = np.percentile(col, low_percentile) if len(col) > 0 else 0.0
+        high[j] = np.percentile(col, high_percentile) if len(col) > 0 else 0.0
+    return low, high
 
 
 def calibrate_staleness_thresholds(staleness: np.ndarray, updated: np.ndarray, percentile: float) -> np.ndarray:
@@ -93,6 +126,51 @@ def cusum_statistic(x: np.ndarray, mean: float, k: float) -> np.ndarray:
     for t, val in enumerate(x):
         s = max(0.0, s + (val - mean) - k)
         out[t] = s
+    return out
+
+
+def adaptive_cusum_statistic(x: np.ndarray, initial_mean: float, k: float, decay: float) -> np.ndarray:
+    """CUSUM against a slowly-adapting reference mean instead of one fixed
+    global mean: mu_t = decay*x_t + (1-decay)*mu_{t-1} (mu_0 = initial_mean),
+    S_t = max(0, S_{t-1} + (x_t - mu_t) - k). Used at detection time (see
+    attribution/rules.py's detect_drift) in place of cusum_statistic's fixed
+    mean.
+
+    Real-data evidence for why this exists (see
+    docs/notes-false-positive-investigation.md): on genuinely normal SynCAN
+    data, CUSUM run against one fixed global mean produces spurious
+    excursions lasting up to ~10 minutes on a handful of signals -- not
+    noise, but a genuinely normal, long-lived driving regime (e.g. a
+    sustained low-speed period) that carries a small but persistent
+    forecast bias relative to that one fixed reference point. A fixed mean
+    has no way to tell that sustained-but-legitimate bias apart from an
+    attacker's injected ramp; both look identical to plain CUSUM.
+
+    An adapting reference mean fixes this by design: a bias that persists
+    for much longer than `decay`'s implied time constant (roughly `1/decay`
+    ticks) gets absorbed into mu_t, so x_t - mu_t shrinks back toward 0 and
+    the statistic stops accumulating -- while a genuine attack's residual
+    keeps producing a fresh gap against the *recently*-adapted mu_t (which
+    hasn't had time to fully track it yet), so real attacks -- whose
+    duration is much shorter than the long spurious regimes this targets --
+    should still accumulate past k during their own window. `decay` is the
+    one parameter controlling that tradeoff and needs empirical tuning
+    (config.CUSUM_ADAPTIVE_DECAY): too large, and it also absorbs genuine
+    attacks; too small, and it barely differs from a fixed mean.
+
+    calibration's own cusum_thresholds (h) are unaffected -- h is still
+    calibrated against cusum_statistic's fixed-mean recursion, since "how
+    large a deviation should count as unusual, on average" is still a
+    meaningful thing to calibrate against a stationary reference; only the
+    live detection-time recursion adapts.
+    """
+    s = 0.0
+    mu = initial_mean
+    out = np.empty_like(x, dtype=float)
+    for t, val in enumerate(x):
+        s = max(0.0, s + (val - mu) - k)
+        out[t] = s
+        mu = decay * val + (1.0 - decay) * mu
     return out
 
 
@@ -137,27 +215,35 @@ def calibrate_cusum_thresholds(
 
 def calibrate(
     residuals: np.ndarray,
+    values: np.ndarray,
     staleness: np.ndarray,
     updated: np.ndarray,
     registry: Registry,
     percentile: float = DEFAULT_CALIBRATION_PERCENTILE,
     k_fraction: float = CUSUM_K_RESIDUAL_FRACTION,
+    value_range_low_percentile: float = 0.5,
+    value_range_high_percentile: float = 99.5,
 ) -> CalibrationResult:
     """Build the full threshold set at one percentile. `residuals` is a
     forecasting model's residuals on normal validation windows (n_windows,
-    n_signals); `staleness`/`updated` are the full (non-windowed) validation
-    grid's staleness counters and update mask (n_ticks, n_signals) from
-    data/staleness.py and data/grid.py respectively -- both column-ordered
-    by registry.signal_index.
+    n_signals); `values`/`staleness`/`updated` are the full (non-windowed)
+    validation grid's signal values, staleness counters, and update mask
+    (n_ticks, n_signals) from data/grid.py and data/staleness.py
+    respectively -- all column-ordered by registry.signal_index.
     """
     if residuals.shape[1] != registry.n_signals:
         raise ValueError(f"residuals has {residuals.shape[1]} columns, expected {registry.n_signals}")
     if staleness.shape[1] != registry.n_signals or updated.shape[1] != registry.n_signals:
         raise ValueError(f"staleness/updated must have {registry.n_signals} columns")
+    if values.shape[1] != registry.n_signals:
+        raise ValueError(f"values has {values.shape[1]} columns, expected {registry.n_signals}")
 
     residual_thresholds = calibrate_residual_thresholds(residuals, percentile)
     cusum_k, cusum_thresholds, cusum_mean = calibrate_cusum_thresholds(
         residuals, percentile, residual_thresholds, k_fraction
+    )
+    value_range_low, value_range_high = calibrate_value_range(
+        values, value_range_low_percentile, value_range_high_percentile
     )
     return CalibrationResult(
         percentile=percentile,
@@ -166,11 +252,14 @@ def calibrate(
         cusum_k=cusum_k,
         cusum_thresholds=cusum_thresholds,
         cusum_mean=cusum_mean,
+        value_range_low=value_range_low,
+        value_range_high=value_range_high,
     )
 
 
 def sensitivity_sweep(
     residuals: np.ndarray,
+    values: np.ndarray,
     staleness: np.ndarray,
     updated: np.ndarray,
     registry: Registry,
@@ -180,4 +269,4 @@ def sensitivity_sweep(
     """One CalibrationResult per percentile in `percentiles` — the basis for
     evaluation's (Step 13) threshold-sensitivity report.
     """
-    return {p: calibrate(residuals, staleness, updated, registry, p, k_fraction) for p in percentiles}
+    return {p: calibrate(residuals, values, staleness, updated, registry, p, k_fraction) for p in percentiles}

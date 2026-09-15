@@ -79,6 +79,58 @@ mean as `cusum_mean`, and `detect_drift` uses `calibration.cusum_mean[j]`
 instead. `calibration.py`'s own docstring and Step 8's doc
 (`docs/07-threshold-calibration.md`) were updated alongside this fix.
 
+**Real-data false-positive mitigations, added after the mean fix alone
+proved insufficient (see `docs/notes-false-positive-investigation.md` for
+the full investigation).** The mean fix corrected *which* reference point
+CUSUM measures from, but real-data testing then showed the dominant
+false-positive volume wasn't mean-related at all — CUSUM's reference mean
+being *static* for the whole stream meant a long-lived but entirely normal
+driving regime (e.g. a sustained low-speed period) could produce a small
+persistent forecast bias that CUSUM accumulated against forever, since it
+has no way to tell that apart from an attacker's injected ramp. Three
+independent, complementary mitigations were added on top of the mean fix,
+each targeting a different axis of the same underlying gap:
+
+- **`require_persistence(fired, min_consecutive_ticks)`** — a per-signal
+  hysteresis/debounce filter: a rule only counts as fired once it's held
+  for a minimum run of consecutive ticks. Cheap and genuinely effective for
+  short, isolated noise firings (measured: on real normal data, the
+  *typical* spurious excursion is 1 tick), but real-data measurement also
+  showed most of the false-positive *volume* comes from a handful of
+  signals whose spurious excursions last as long as real attacks
+  (thousands of ticks) — persistence alone cannot touch those, since
+  duration is the one thing it can't distinguish them by.
+- **`adaptive_cusum_statistic(x, initial_mean, k, decay)`** (in
+  `calibration.py`, alongside `cusum_statistic`) — the actual fix for that
+  dominant volume: an EWMA-adapting reference mean instead of a fixed one.
+  A bias that persists far longer than the decay's implied time constant
+  gets absorbed into the adapting mean (so the statistic stops
+  accumulating on it), while a genuine attack — much shorter-lived than
+  the spurious regimes this targets — still produces a fresh gap against
+  the *recently*-adapted mean. `detect_drift`'s `cusum_decay` parameter
+  (default `0.0`, an exact no-op reproducing the original fixed-mean
+  behavior) controls this; `attribute()` defaults it to
+  `config.CUSUM_ADAPTIVE_DECAY`. Calibration's own `h` computation is
+  unaffected — it's still calibrated against the fixed-mean recursion,
+  since "how large a deviation should count as unusual, on average" is
+  still meaningfully measured against a stationary reference; only the
+  live detection-time recursion adapts.
+- **`in_normal_value_range(values, calibration, max_range_width)`** — a
+  complementary, deliberately partial gate: suppress drift/plateau while
+  the current value sits comfortably within its own calibrated normal
+  range (`calibration.value_range_low`/`value_range_high`, from
+  `calibrate_value_range`), but ONLY for signals whose range is narrow
+  enough for "in range" to carry real information. Real-data measurement
+  found this literally both ways on the same handful of problem signals:
+  two (`id2_sig2`, `id1_sig1`) had false positives whose values sat inside
+  a genuinely narrow calibrated range (a real, if partial, fix); two others
+  (`id5_sig2`, `id6_sig1`) had a calibrated range already spanning nearly
+  their full `[0, 1]` scale, where the same gate would suppress almost
+  everything — including real attacks — if applied unconditionally. The
+  `max_range_width` self-limiting check (`config.VALUE_RANGE_GATE_MAX_WIDTH`,
+  chosen directly from these four measured signals) is what keeps this a
+  safe, additive mitigation instead of a recall hazard.
+
 **Plateau's "flat" check is a direct tick-over-tick value comparison, not a
 staleness read.** A plateau attack keeps re-transmitting the same frozen
 value — the grid's `updated` mask can stay `True` every tick even though
@@ -99,14 +151,27 @@ boundary limitation rather than special-cased away.
   fired there, in priority order.
 - **`detect_suppression(staleness, calibration)`** —
   `staleness > calibration.staleness_thresholds`, elementwise.
-- **`detect_plateau(values, residuals, calibration, confidence_mask=None)`**
-  — flat-value mask (tick 0 always `False`) ANDed with
-  `abs(residuals) > calibration.residual_thresholds`, then ANDed with
-  `confidence_mask` if given.
-- **`detect_drift(residuals, calibration, confidence_mask=None)`** — per
-  signal, runs `calibration.cusum_statistic(residuals[:, j], mean=calibration.cusum_mean[j],
-  k=calibration.cusum_k[j])` and compares against
-  `calibration.cusum_thresholds[j]`.
+- **`require_persistence(fired, min_consecutive_ticks)`** — per-signal
+  run-length filter: zeroes out any run of consecutive `True` values
+  shorter than `min_consecutive_ticks`; `<=1` is a no-op.
+- **`in_normal_value_range(values, calibration, max_range_width)`** — per
+  (tick, signal): `True` where the value is within
+  `[value_range_low, value_range_high]` AND that signal's range width is
+  below `max_range_width` (else always `False` for that signal).
+- **`detect_plateau(values, residuals, calibration, confidence_mask=None,
+  min_persistence_ticks=1, value_range_gate=False)`** — flat-value mask
+  (tick 0 always `False`) ANDed with
+  `abs(residuals) > calibration.residual_thresholds`, ANDed with
+  `confidence_mask` if given, ANDed with `~in_normal_value_range(...)` if
+  `value_range_gate`, then passed through `require_persistence`.
+- **`detect_drift(residuals, calibration, confidence_mask=None,
+  min_persistence_ticks=1, cusum_decay=0.0, values=None,
+  value_range_gate=False)`** — per signal, runs
+  `calibration.adaptive_cusum_statistic(residuals[:, j], initial_mean=calibration.cusum_mean[j],
+  k=calibration.cusum_k[j], decay=cusum_decay)` and compares against
+  `calibration.cusum_thresholds[j]`; same confidence/value-range/persistence
+  gating as `detect_plateau` (`values` is required when `value_range_gate`
+  is `True`).
 - **`detect_replay(residuals, calibration, correlation, plateau_fired,
   drift_fired, confidence_mask=None)`** — per signal, ORs together whether
   any correlation-graph partner (`correlation.partner_indices(j)`) also
@@ -117,11 +182,18 @@ boundary limitation rather than special-cased away.
   rule's name to any (tick, signal) that fired and isn't already labeled by
   a higher-priority rule.
 - **`attribute(residuals, values, staleness, calibration, correlation,
-  registry, confidence_mask=None)`** — the orchestrator: validates all three
-  input arrays share one `(n_ticks, n_signals)` shape matching
-  `registry.n_signals`, runs all four `detect_*` functions in priority order
-  (plateau/drift computed before replay, since replay's own definition needs
-  their masks), and returns one `AttributionResult`.
+  registry, confidence_mask=None, drift_min_persistence_ticks=DRIFT_MIN_PERSISTENCE_TICKS,
+  plateau_min_persistence_ticks=PLATEAU_MIN_PERSISTENCE_TICKS,
+  drift_cusum_decay=CUSUM_ADAPTIVE_DECAY, value_range_gate=True)`** — the
+  orchestrator: validates all three input arrays share one `(n_ticks,
+  n_signals)` shape matching `registry.n_signals`, runs all four `detect_*`
+  functions in priority order (plateau/drift computed before replay, since
+  replay's own definition needs their masks), and returns one
+  `AttributionResult`. Unlike `detect_plateau`/`detect_drift` themselves
+  (which default their new parameters to no-ops so they're safe to call
+  directly in isolation), `attribute()` defaults persistence/decay/gate to
+  the config-driven "on" values -- the real-data false-positive
+  mitigations are active by default for any real pipeline run.
 
 ## Testing notes
 
@@ -142,6 +214,21 @@ ability to corroborate a *neighbor's* replay call; priority resolution is
 checked on a case where suppression and plateau both independently fire at
 the same (tick, signal) — `primary_label` picks suppression, but
 `fired_rules()` still reports both.
+
+The three real-data false-positive mitigations get the same treatment:
+`require_persistence` is checked directly against hand-crafted run-length
+arrays (a short run dropped, a long run kept, multiple runs in one column
+handled independently, boundary-touching runs correct); `in_normal_value_range`
+is checked to return `True` only within bounds AND only for a
+narrow-enough-range signal, never for a wide-range one; `detect_drift`'s
+`cusum_decay` is checked with a synthetic case built directly from the
+real-data finding — a small, sustained bias that a fixed mean (`decay=0.0`)
+never stops firing on, but a nonzero decay does (mirroring the shape of the
+original `cusum_mean` regression test); and `detect_drift`'s
+`value_range_gate` is checked to suppress firing for a narrow-range signal
+while leaving the identical residual/CUSUM signature un-suppressed on a
+wide-range signal, proving the self-limiting behavior actually works, not
+just that the gate exists.
 
 One integration test (`test_suppression_attack_end_to_end_on_synthetic_data`)
 runs the real pipeline — `build_registry` → `align_to_grid` →

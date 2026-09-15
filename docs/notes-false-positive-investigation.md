@@ -1,15 +1,17 @@
 ## Cross-cutting note: the real-data false-positive problem, what we've done about it, and where things stand
 
-**Status:** root cause understood and partially fixed (mean-mismatch bug,
-Priority 1 — done). A structural fusion issue (see "Root cause 3" below)
-turned out to be the dominant problem; the fix currently being tuned for it
-is temporal persistence/hysteresis filtering (Priority 6, in progress). The
-numbers in this doc reflect the state as of the mean-mismatch fix +
-`CUSUM_K_RESIDUAL_FRACTION` calibration change (Option A), **before**
-persistence filtering is tuned to a final value — they will be updated once
-that tuning finishes. See `docs/notes-real-data-scaling.md` for the
-underlying compute/memory-scaling work this built on, and the plan file
-history for the full blow-by-blow.
+**Status:** root cause understood; three real-data mitigations implemented
+(persistence filtering, an adaptive CUSUM reference mean, a normal-value-
+range gate — see "4." below) and tested against real data at multiple
+parameter values. **Not yet resolved**: the adaptive CUSUM mean is the
+single biggest false-positive lever found all session (up to a 76% drop on
+`drift`), but every value tried so far trades a large, proportional amount
+of `drift`'s own recall away with it — worse than the user's stated
+priority (recall over precision) tolerates. See "Priority 7 results: the
+persistence + adaptive-mean + value-range-gate combination" below for the
+full comparison table and the open decision this leaves. See
+`docs/notes-real-data-scaling.md` for the underlying compute/memory-scaling
+work this built on, and the plan file history for the full blow-by-blow.
 
 ### The problem
 
@@ -62,22 +64,40 @@ coverage) — no amount of per-signal threshold tuning can fix a fusion-level
 saturation problem, it can only trade recall for diminishing precision
 returns.
 
-**4. Current fix in progress: temporal persistence/hysteresis filtering.**
-The user's explicit call: prioritize recall over precision, so `k` was
-reverted to the recall-preserving 0.2, and false-positive reduction is
-instead being pursued via a lever that doesn't trade against recall the
-same way. Real SynCAN attack intervals last a long time — pulled directly
-from the real test files, even the *shortest* observed interval is 4.18s
-(420+ ticks at the 0.01s grid), with medians around 6.3-6.6s. A new
-`require_persistence()` function in `attribution/rules.py` now requires
-the `drift` and `plateau` rules to fire for a minimum run of consecutive
-ticks (currently defaulted to 50, config-tunable) before counting a
-detection — filtering short, isolated noise firings while leaving any
-genuinely sustained attack (which lasts an order of magnitude longer than
-the filter window) untouched. `suppression` (already inherently
-duration-gated via its own staleness-threshold mechanism) and `replay`
-(already barely functioning) are deliberately left unfiltered. Empirical
-tuning of the tick-count threshold against real data is in progress.
+**4. Three real-data mitigations implemented, in order of how much they
+actually moved the numbers.** The user's explicit call: prioritize recall
+over precision, so `k` was reverted to the recall-preserving 0.2, and
+false-positive reduction was pursued via levers that don't trade against
+recall the same blunt way raising `k` did.
+
+- **Persistence/hysteresis filtering** (`require_persistence()` in
+  `attribution/rules.py`): requires `drift`/`plateau` to fire for a minimum
+  run of consecutive ticks (config-tunable, settled at 12) before counting
+  a detection. Real attack intervals last a long time (shortest observed:
+  4.18s / 420+ ticks), so this should be cheap and safe in principle — and
+  measured against real data, it was: a small, genuine, but modest
+  improvement, since (see the follow-up investigation this triggered) most
+  of the false-positive *volume* turned out to come from a handful of
+  signals whose spurious excursions last as long as real attacks, which
+  persistence structurally cannot filter.
+- **Adaptive CUSUM reference mean** (`adaptive_cusum_statistic()` in
+  `calibration.py`, `cusum_decay` parameter on `detect_drift`): the actual
+  fix for that dominant volume — see the real-data investigation below for
+  why. By far the largest lever found this session, but with a real,
+  proportional recall cost that hasn't yet been resolved to the user's
+  satisfaction (see the results table below).
+- **Normal-value-range gate** (`in_normal_value_range()` /
+  `calibrate_value_range()`): suppresses `drift`/`plateau` when the value
+  sits comfortably within a signal's own calibrated normal range, but only
+  for signals whose range is narrow enough for that to mean anything —
+  confirmed on real data to help two specific signals and to be correctly
+  self-disabled (not just inert, actively excluded) for two others whose
+  range spans nearly their whole scale.
+
+`suppression` (already inherently duration-gated via its own
+staleness-threshold mechanism) and `replay` (already barely functioning —
+its own rule fires essentially never against real ground truth, a separate
+problem) are deliberately left unfiltered by persistence/decay.
 
 ### Current model performance (real SynCAN data)
 
@@ -111,6 +131,62 @@ rewards saying "normal" by default in a dataset that's ~82-87% normal
 ticks; precision/recall/F1 are what actually reflect detector usefulness
 here, which is why `evaluate.py`'s `DetectionMetrics` never computed
 accuracy as a metric in the first place.
+
+### Priority 7 results: the persistence + adaptive-mean + value-range-gate combination
+
+Real-data investigation (see the plan file for the full methodology) found
+that persistence alone couldn't fix the dominant false-positive volume: 7
+of 20 signals produce spurious CUSUM excursions lasting up to ~10 minutes
+each — the same order of magnitude as real attacks, so no persistence
+value can tell them apart by duration. The root cause: CUSUM's reference
+mean is one static global number, and real driving passes through
+long-lived but entirely legitimate "regime" periods that carry a small
+systematic forecast bias relative to that fixed reference — exactly the
+sustained-deviation signature CUSUM exists to catch, except it isn't an
+attack. `adaptive_cusum_statistic()` (an EWMA-adapting reference mean) was
+built to fix this directly, and tested at two decay values, alongside the
+settled persistence value (12 ticks) and the value-range gate (on):
+
+| config | attack_type | n_gt | flagged | TP | FP | FN | precision | recall | F1 | accuracy |
+|---|---|---|---|---|---|---|---|---|---|---|
+| persistence=50 only | plateau | 73,421 | 255,333 | 51,524 | 203,809 | 21,897 | 0.202 | 0.702 | 0.314 | 0.498 |
+| persistence=50 only | drift | 60,161 | 441,250 | 58,655 | 382,595 | 1,506 | 0.133 | 0.975 | 0.234 | 0.146 |
+| persistence=50 only | replay | 59,202 | 24,737 | 8,738 | 15,999 | 50,464 | 0.353 | 0.148 | 0.208 | 0.852 |
+| persistence=50 only | suppression | 79,714 | 447,170 | 79,713 | 367,457 | 1 | 0.178 | 1.000 | 0.303 | 0.183 |
+| persistence=50 only | flooding | 74,104 | 401,299 | 67,020 | 334,279 | 7,084 | 0.167 | 0.904 | 0.282 | 0.241 |
+| persist=12, decay=0.0005 | plateau | 73,421 | 181,541 | 42,821 | 138,720 | 30,600 | 0.236 | 0.583 | 0.336 | 0.624 |
+| persist=12, decay=0.0005 | drift | 60,161 | 109,833 | 16,302 | 93,531 | 43,859 | 0.148 | 0.271 | 0.192 | 0.695 |
+| persist=12, decay=0.0005 | replay | 59,202 | 13,670 | 6,873 | 6,797 | 52,329 | 0.503 | 0.116 | 0.189 | 0.869 |
+| persist=12, decay=0.0005 | suppression | 79,714 | 444,070 | 79,710 | 364,360 | 4 | 0.180 | 1.000 | 0.304 | 0.190 |
+| persist=12, decay=0.0005 | flooding | 74,104 | 274,041 | 51,736 | 222,305 | 22,368 | 0.189 | 0.698 | 0.297 | 0.456 |
+| persist=12, decay=0.0001 | plateau | 73,421 | 210,233 | 47,719 | 162,514 | 25,702 | 0.227 | 0.650 | 0.337 | 0.582 |
+| persist=12, decay=0.0001 | drift | 60,161 | 209,741 | 29,847 | 179,894 | 30,314 | 0.142 | 0.496 | 0.221 | 0.533 |
+| persist=12, decay=0.0001 | replay | 59,202 | 17,627 | 7,559 | 10,068 | 51,643 | 0.429 | 0.128 | 0.197 | 0.863 |
+| persist=12, decay=0.0001 | suppression | 79,714 | 447,332 | 79,713 | 367,619 | 1 | 0.178 | 1.000 | 0.303 | 0.183 |
+| persist=12, decay=0.0001 | flooding | 74,104 | 290,507 | 58,455 | 232,052 | 15,649 | 0.201 | 0.789 | 0.321 | 0.450 |
+
+**Reading `drift` across the three rows is the crux of the open decision:**
+false positives dropped 385,166 → 382,595 (persistence alone, negligible)
+→ 179,894 (gentle decay, -53%) → 93,531 (aggressive decay, -76%) — a real,
+substantial, monotonic improvement. But recall dropped right alongside it:
+0.985 (original fixed mean) → 0.975 → 0.496 → 0.271. Both decay values
+tested move a large amount of precision and recall in lockstep; neither
+comes close to preserving drift's original near-perfect recall while still
+capturing a meaningful chunk of the false-positive win. This is not
+attributable to persistence or the value-range gate (both held constant
+across the two decay rows) — it's the adaptive mean specifically, and it's
+the single open question blocking calling this priority done.
+
+Two things worth noting in the same table: (1) every OTHER attack type's
+numbers move too, even though `cusum_decay` only touches `detect_drift` in
+code — because those attack types' reported metrics include `drift` firing
+on their *other*, non-attacked signals across the same file (the same
+OR-across-20-signals fusion effect documented above). (2) `suppression`
+stayed essentially completely flat (~367,500 FP, 1.000 recall) across
+*every single lever* tried this session — k, persistence, decay, and the
+value-range gate — which is now a genuinely unresolved anomaly, not just a
+hard case: something specific to that test file or that rule's interaction
+with it isn't responding to any mechanism tried so far.
 
 ### What the pipeline's output actually looks like
 

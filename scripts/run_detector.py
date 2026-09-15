@@ -173,7 +173,9 @@ def main() -> None:
         print(f"  {entry.name:12s} model_var={np.var(val_residuals[:, j]):.5f}  naive_var={np.var(naive_val_residuals[:, j]):.5f}  -> {trust}")
 
     val_staleness = compute_staleness(val_alignment)
-    calibration = calibrate(val_residuals, val_staleness, val_alignment.updated, registry, percentile=args.percentile)
+    calibration = calibrate(
+        val_residuals, val_alignment.values, val_staleness, val_alignment.updated, registry, percentile=args.percentile
+    )
 
     _print_header(f"Calibration (percentile={args.percentile})")
     for entry in registry.entries:
