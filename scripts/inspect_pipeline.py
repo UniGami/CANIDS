@@ -316,6 +316,11 @@ def stage_train_predict(
         ax.axhline(-thr, color="gray", lw=0.6, ls=":")
         ax.set_ylabel(f"{entry.name}\n({trust})", fontsize=7)
         ax.legend(fontsize=6, loc="upper right", ncol=4)
+    if time_range is not None:
+        # axvspan's ground-truth shading can span far more than time_range (a real
+        # SynCAN attack can recur across most of the file) and its patch still
+        # counts toward autoscale, so pin the view explicitly or the zoom is a no-op.
+        axes[-1, 0].set_xlim(time_range)
     axes[-1, 0].set_xlabel("time (s)")
     range_note = f" (t=[{time_range[0]:.2f}, {time_range[1]:.2f}])" if time_range else ""
     fig.suptitle(f"Predicted vs. Actual vs. Residual -- {test_csv.name}{range_note}")
