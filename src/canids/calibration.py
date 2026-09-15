@@ -21,7 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
-from canids.config import CALIBRATION_PERCENTILES, CUSUM_K_FRACTION, DEFAULT_CALIBRATION_PERCENTILE
+from canids.config import CALIBRATION_PERCENTILES, CUSUM_K_RESIDUAL_FRACTION, DEFAULT_CALIBRATION_PERCENTILE
 from canids.registry import Registry
 
 
@@ -32,6 +32,10 @@ class CalibrationResult:
     staleness_thresholds: np.ndarray  # (n_signals,) -- ticks-since-update above this is unusual
     cusum_k: np.ndarray  # (n_signals,) -- CUSUM slack/allowance per signal
     cusum_thresholds: np.ndarray  # (n_signals,) -- CUSUM statistic above this is unusual (drift)
+    cusum_mean: np.ndarray  # (n_signals,) -- residual mean the CUSUM statistic was calibrated relative to;
+    # attribution/rules.py's detect_drift() must re-run CUSUM against this SAME mean, not an assumed 0.0,
+    # or the live statistic accumulates deviations from a different reference point than cusum_thresholds
+    # was calibrated against.
 
     def save(self, path: Path) -> None:
         payload = {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in asdict(self).items()}
@@ -46,6 +50,7 @@ class CalibrationResult:
             staleness_thresholds=np.array(payload["staleness_thresholds"]),
             cusum_k=np.array(payload["cusum_k"]),
             cusum_thresholds=np.array(payload["cusum_thresholds"]),
+            cusum_mean=np.array(payload["cusum_mean"]),
         )
 
 
@@ -92,22 +97,42 @@ def cusum_statistic(x: np.ndarray, mean: float, k: float) -> np.ndarray:
 
 
 def calibrate_cusum_thresholds(
-    residuals: np.ndarray, percentile: float, k_fraction: float = CUSUM_K_FRACTION
-) -> tuple[np.ndarray, np.ndarray]:
-    """Per-signal (k, h): k is the CUSUM slack, set to k_fraction times that
-    signal's residual std on validation data; h is the alarm threshold, set
-    to the given percentile of the CUSUM statistic run over validation
-    residuals with that k. Used by the drift rule.
+    residuals: np.ndarray,
+    percentile: float,
+    residual_thresholds: np.ndarray,
+    k_fraction: float = CUSUM_K_RESIDUAL_FRACTION,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per-signal (k, h, mean): k is the CUSUM slack, set to k_fraction times
+    that signal's residual_thresholds entry (a percentile-of-|residual|
+    magnitude, from calibrate_residual_thresholds -- NOT that signal's
+    residual std); mean is that signal's actual residual sample mean on
+    validation data; h is the alarm threshold, set to the given percentile
+    of the CUSUM statistic run over validation residuals with that k AND
+    that mean. Used by the drift rule -- mean must be persisted and reused
+    as-is at detection time (see CalibrationResult.cusum_mean), since h was
+    calibrated against deviations measured from this specific mean, not
+    from 0.
+
+    k is deliberately based on residual_thresholds rather than std: std
+    shrinks as a forecasting model becomes more accurate, which would make
+    CUSUM more trigger-happy exactly when the model is doing its job well.
+    residual_thresholds is a tail-magnitude measure that doesn't collapse
+    the same way, and keeps k anchored to a scale large enough that CUSUM
+    both resists accumulating from ordinary noise and decays back to 0
+    promptly after a real perturbation (see config.CUSUM_K_RESIDUAL_FRACTION
+    and docs/notes-real-data-scaling.md for the real-data finding this
+    fixes).
     """
     n_signals = residuals.shape[1]
     k = np.zeros(n_signals)
     h = np.zeros(n_signals)
+    mean = np.zeros(n_signals)
     for j in range(n_signals):
         col = residuals[:, j]
-        mean = float(col.mean())
-        k[j] = k_fraction * float(col.std())
-        h[j] = np.percentile(cusum_statistic(col, mean, k[j]), percentile)
-    return k, h
+        mean[j] = float(col.mean())
+        k[j] = k_fraction * float(residual_thresholds[j])
+        h[j] = np.percentile(cusum_statistic(col, mean[j], k[j]), percentile)
+    return k, h, mean
 
 
 def calibrate(
@@ -116,7 +141,7 @@ def calibrate(
     updated: np.ndarray,
     registry: Registry,
     percentile: float = DEFAULT_CALIBRATION_PERCENTILE,
-    k_fraction: float = CUSUM_K_FRACTION,
+    k_fraction: float = CUSUM_K_RESIDUAL_FRACTION,
 ) -> CalibrationResult:
     """Build the full threshold set at one percentile. `residuals` is a
     forecasting model's residuals on normal validation windows (n_windows,
@@ -130,13 +155,17 @@ def calibrate(
     if staleness.shape[1] != registry.n_signals or updated.shape[1] != registry.n_signals:
         raise ValueError(f"staleness/updated must have {registry.n_signals} columns")
 
-    cusum_k, cusum_thresholds = calibrate_cusum_thresholds(residuals, percentile, k_fraction)
+    residual_thresholds = calibrate_residual_thresholds(residuals, percentile)
+    cusum_k, cusum_thresholds, cusum_mean = calibrate_cusum_thresholds(
+        residuals, percentile, residual_thresholds, k_fraction
+    )
     return CalibrationResult(
         percentile=percentile,
-        residual_thresholds=calibrate_residual_thresholds(residuals, percentile),
+        residual_thresholds=residual_thresholds,
         staleness_thresholds=calibrate_staleness_thresholds(staleness, updated, percentile),
         cusum_k=cusum_k,
         cusum_thresholds=cusum_thresholds,
+        cusum_mean=cusum_mean,
     )
 
 
@@ -146,7 +175,7 @@ def sensitivity_sweep(
     updated: np.ndarray,
     registry: Registry,
     percentiles: list[float] = CALIBRATION_PERCENTILES,
-    k_fraction: float = CUSUM_K_FRACTION,
+    k_fraction: float = CUSUM_K_RESIDUAL_FRACTION,
 ) -> dict[float, CalibrationResult]:
     """One CalibrationResult per percentile in `percentiles` — the basis for
     evaluation's (Step 13) threshold-sensitivity report.

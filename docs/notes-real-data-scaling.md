@@ -196,11 +196,124 @@ for a given deadline, not as a default.
    `early_stopping_patience`/`min_delta`; `run_detector.py` defaults
    `--early-stopping-patience` to 5 (`0` disables it, running the full
    `--epochs`).
-5. [ ] Train on one file first (issue #7) — a methodology decision for
-   whoever runs the real training, not a code change; still open.
+5. [x] **Train on one file first (issue #7)** — done, with a real result.
+   Full `train_1.csv` (1,242,035 train / 310,469 val windows, batch_size
+   1024): early stopping fired at **epoch 8/20**, `train_loss=0.00010`,
+   `val_loss=0.00177`. Validation loss plateaued rather than still
+   improving — no sign one file is data-starved for this baseline. Total
+   wall time ~25 minutes (extraction + training + calibration + correlation
+   graph + full-test-file detection), confirming the streaming fix (items
+   1-4) works correctly at actual full-file scale, not just in benchmarks.
 6. [ ] CUDA reinstall — still open; a real, separate action (package
    reinstall, several GB download), deliberately last since items 1-4 alone
    already deliver the largest, best-grounded speedup.
+
+### Result of the first full-file run: recall is excellent, precision isn't — and why
+
+Detection on the full `test_suppress` file (2,112,647 rows, 449,994
+evaluated ticks after warm-up): **79,713/79,714 ground-truth attack ticks
+caught (99.999% recall)**, but **447,531 total flagged** — roughly 368,000
+false positives. The `drift` rule alone fired 2,004,040 times (`suppression`
+170,502, `plateau` 159,727, `replay` 410 — those stayed reasonable).
+
+This isn't a bug in the streaming fix — it's a genuine consequence of how
+well the model fit this particular file. Residual variance came out very
+small (the model is accurate), which made `calibrate_cusum_thresholds`'
+`k` (at the time, derived as `CUSUM_K_FRACTION * residual_std`) very small
+too — some signals calibrated to `cusum_k` as low as 0.002-0.003. With that
+little slack, the CUSUM statistic accumulates on almost any small sustained
+deviation, and real driving data has plenty of small, non-attack drifts the
+clean synthetic sine-wave signals never produced. **The calibration
+approach (Step 8) was tuned and tested against synthetic data; this was the
+first evidence it needed revisiting before real-data detection numbers mean
+anything.** See "Root cause confirmed and fixed" below for the full
+investigation and the fix that followed.
+
+### Root cause confirmed and fixed: `cusum_mean` bug + CUSUM `k` redesign
+
+Two separate issues were found and fixed, in this order.
+
+**1. Mean-mismatch bug (fixed first, alone insufficient).**
+`calibrate_cusum_thresholds` computed each signal's real residual mean but
+discarded it; `detect_drift` re-ran CUSUM at detection time assuming
+`mean=0.0`. Fixed by persisting it as `CalibrationResult.cusum_mean` and
+having `detect_drift` reuse it (see `docs/08-attribution-layer.md`). Re-running
+the identical experiment (`train_1.csv` → `test_suppression.csv`) before and
+after this fix showed false positives went slightly **up**, not down
+(367,818 → 370,273) — a training-run confound (the "after" run happened to
+complete all 20 epochs instead of early-stopping, producing an even more
+accurate, more tightly-calibrated model) partly masked it, but directionally
+the mean fix alone clearly wasn't sufficient. This ruled out "wrong
+reference point" as the dominant cause and pointed at something structural
+in how `k` itself gets chosen.
+
+**2. Diagnosis with real data before choosing a fix.** Rather than guess,
+three diagnostics were run against one saved, reused model
+(`models/gru_syncan_train1.pt`, trained once on the full `train_1.csv` —
+1,242,035 windows, early stopping at epoch 7/20, `val_loss=0.00283`):
+
+- **Per-attack-type metrics across all 5 real SynCAN attack files**
+  (`scripts/run_evaluation.py --attack-source syncan`), not just
+  suppression:
+
+  | attack_type | n_gt | flagged | precision | recall | f1 |
+  |---|---|---|---|---|---|
+  | plateau | 73,421 | 324,827 | 0.185 | 0.819 | 0.302 |
+  | drift | 60,161 | 449,646 | 0.134 | 1.000 | 0.236 |
+  | replay | 59,202 | 62,380 | 0.267 | 0.281 | 0.274 |
+  | suppression | 79,714 | 447,313 | 0.178 | 1.000 | 0.303 |
+  | flooding | 74,104 | 415,260 | 0.172 | 0.964 | 0.292 |
+
+  The rule-collision matrix showed `drift` firing on ground-truth ticks
+  belonging to *every* attack type — including ones its signature has
+  nothing to do with (96,307 spurious `drift` firings on `plateau` ticks,
+  145,425 on `flooding`, 318,405 on `suppression`) — confirming the
+  over-firing is systemic, not suppression-specific.
+- **Threshold-sensitivity sweep** (`--sweep`, percentiles 95→99.9, same
+  saved model, no retraining): `drift` and `suppression` flagged counts
+  barely moved at all across the full percentile range (e.g. drift:
+  449,994→449,183 flagged). Since percentile only ever fed into `h`, not
+  `k`, this was the confirming signal that the problem was `k`-driven, not
+  `h`-driven — a wider or narrower alarm cutoff couldn't fix a statistic
+  that almost never resets to 0 in the first place.
+- **False-positive check against `test_normal.csv`** (2,150,052 rows, 0
+  attack-labeled, genuinely normal and held out from both training and
+  calibration): only **3.02% false-positive rate** (13,597/449,994 ticks;
+  `drift` accounted for 11,890 of them), a world apart from the ~82%
+  false-positive rate on the attack files. This was the key finding that
+  refined the diagnosis: single-file calibration *does* generalize
+  reasonably well to new normal data — the real problem is that **CUSUM has
+  no decay mechanism, and a `k` this small means the accumulated statistic
+  rarely returns to 0 even during quiet stretches.** Once a real attack
+  perturbs it, it can stay elevated for a very long time afterward —
+  contaminating large stretches of the *same attack file* long after the
+  attack itself ends, which is exactly why attack files (which necessarily
+  contain at least one real perturbation) show dramatically higher
+  false-positive rates than a file that never gets perturbed at all.
+
+**3. Fix: decouple `k` from the model's own residual accuracy (Option A).**
+`k` was `CUSUM_K_FRACTION * residual_std` — meaning a *more accurate* model
+(smaller residual std) mechanically produced a *smaller, more trigger-happy*
+`k`, exactly backwards from what you'd want. `calibration.py`'s `calibrate()`
+now computes `residual_thresholds` (a percentile-of-|residual| tail
+magnitude, already needed elsewhere) **before** `cusum_k/h/mean`, and
+`calibrate_cusum_thresholds` derives `k = CUSUM_K_RESIDUAL_FRACTION *
+residual_thresholds[j]` (new constant, 0.2, replacing the retired
+`CUSUM_K_FRACTION = 0.5`) instead of `k_fraction * col.std()`. Unlike std,
+a tail-magnitude percentile doesn't collapse just because the model's
+*average* error shrinks — it stays anchored to "how large a deviation would
+actually matter," which both resists accumulating from ordinary noise and
+lets CUSUM decay back to 0 promptly after a real perturbation instead of
+staying pinned near threshold for the rest of the file. See
+`docs/07-threshold-calibration.md`'s correction note and
+`tests/test_calibration.py::test_calibrate_cusum_thresholds_k_does_not_collapse_with_shrinking_std`
+for the mechanics and the regression test proving it.
+
+A secondary, unrelated finding surfaced by the same diagnostics: `replay`
+has poor recall (0.281, 42,559 false negatives) — most real replay attacks
+aren't caught by any rule. Out of scope for this fix; worth a look
+separately, since it's a detection-coverage gap rather than a
+false-positive problem.
 
 Verified end-to-end against both the synthetic dataset and a real SynCAN
 slice (`scripts/prepare_syncan_data.py` output) after implementing 1-4: the

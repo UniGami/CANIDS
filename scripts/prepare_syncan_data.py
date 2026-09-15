@@ -91,10 +91,14 @@ def main() -> None:
         span = df["Time"].max() - df["Time"].min() if len(df) else 0.0
         print(f"  -> {out_path}  ({len(df):,} rows, {span:.1f}s span, {n_attacked:,} attack-labeled rows)")
 
-    print("\nDone. Example:")
-    normal_path = args.out_dir / ("syncan_train.csv" if len(train_dfs) > 1 and not args.no_concat_train else f"syncan_{train_stems[0]}.csv")
-    example_test = test_types[0] if test_types else "replay"
-    print(f"  python scripts/run_detector.py --normal-csv {normal_path} --test-csv {args.out_dir / f'syncan_test_{example_test}.csv'}")
+    print("\nDone.")
+    if train_stems:
+        normal_path = args.out_dir / (
+            "syncan_train.csv" if len(train_dfs) > 1 and not args.no_concat_train else f"syncan_{train_stems[0]}.csv"
+        )
+        example_test = test_types[0] if test_types else "replay"
+        print("Example:")
+        print(f"  python scripts/run_detector.py --normal-csv {normal_path} --test-csv {args.out_dir / f'syncan_test_{example_test}.csv'}")
 
 
 if __name__ == "__main__":

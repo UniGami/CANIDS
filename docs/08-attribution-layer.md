@@ -62,17 +62,22 @@ evidence or a partner's corroborating evidence — a low-confidence signal
 can't supply a trustworthy spike in either role. Suppression is passed no
 mask at all, consistent with it never touching residuals.
 
-**Drift's CUSUM re-run uses `mean=0.0`, not the calibration-time sample
-mean.** `calibration.calibrate_cusum_thresholds` computes a per-signal `k`
-and `h` (`cusum_thresholds`) from validation residuals, but
-`CalibrationResult` doesn't persist the sample mean it used internally —
-only `cusum_k` and `cusum_thresholds`. Rather than add a field to an
-already-built, already-tested Step 8 artifact, `detect_drift` re-runs
-`calibration.cusum_statistic` (reused, not reimplemented — exactly what that
-function's docstring flagged Step 9 would need it for) with `mean=0.0`: the
-theoretical center of an unbiased forecaster's residual stream, and the
-correct reference point for a live stream that isn't the same sample the
-mean was measured on anyway.
+**Drift's CUSUM re-run uses the calibration-time sample mean, not an assumed
+0.0 — corrected after real-data testing found the original assumption
+wrong.** As originally written, `CalibrationResult` didn't persist the
+per-signal residual mean `calibrate_cusum_thresholds` computes internally —
+only `cusum_k` and `cusum_thresholds` — so `detect_drift` re-ran
+`calibration.cusum_statistic` with `mean=0.0`, reasoning that 0 is the
+theoretical center of an unbiased forecaster's residual stream. Training on
+real SynCAN data (see `docs/notes-real-data-scaling.md`) showed that
+reasoning doesn't hold well enough in practice: a real model can carry a
+small but genuinely nonzero bias per signal, and `h` was calibrated against
+deviations from that signal's *actual* mean, not 0 — accumulating against
+the wrong reference point caused the `drift` rule to fire on ~89% of
+eligible ticks in one real-data run. `CalibrationResult` now persists that
+mean as `cusum_mean`, and `detect_drift` uses `calibration.cusum_mean[j]`
+instead. `calibration.py`'s own docstring and Step 8's doc
+(`docs/07-threshold-calibration.md`) were updated alongside this fix.
 
 **Plateau's "flat" check is a direct tick-over-tick value comparison, not a
 staleness read.** A plateau attack keeps re-transmitting the same frozen
@@ -99,7 +104,7 @@ boundary limitation rather than special-cased away.
   `abs(residuals) > calibration.residual_thresholds`, then ANDed with
   `confidence_mask` if given.
 - **`detect_drift(residuals, calibration, confidence_mask=None)`** — per
-  signal, runs `calibration.cusum_statistic(residuals[:, j], mean=0.0,
+  signal, runs `calibration.cusum_statistic(residuals[:, j], mean=calibration.cusum_mean[j],
   k=calibration.cusum_k[j])` and compares against
   `calibration.cusum_thresholds[j]`.
 - **`detect_replay(residuals, calibration, correlation, plateau_fired,
@@ -125,7 +130,9 @@ first — matching the same "hand-computable case, then one integration test"
 pattern `calibration.py`'s tests use. Specific things checked: plateau
 requires *both* flatness and residual exceedance (neither alone fires, and
 tick 0 never fires); drift's live CUSUM run is checked against calling
-`calibration.cusum_statistic` directly with the same `mean=0.0`, `k`; replay
+`calibration.cusum_statistic` directly with the same `mean`, `k` (plus a
+dedicated test asserting a nonzero `cusum_mean` changes the outcome — the
+test that would have caught the original mean=0.0 bug); replay
 requires a partner's corroborating spike (an isolated spike on a signal with
 no partner, or a partner that didn't also spike, never fires) and is
 correctly excluded when plateau or drift already claimed that signal;

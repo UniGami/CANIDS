@@ -69,28 +69,64 @@ statistic (`S_t = max(0, S_{t-1} + (x_t - mean) - k)`) accumulates evidence
 of a sustained shift *above* the calibration mean over time while resetting
 to zero the moment things return to normal, which a plain per-tick threshold
 structurally cannot do. `k` (the "slack" or "allowance") is set to
-`config.CUSUM_K_FRACTION` (0.5) times that signal's residual std on
-validation data — the standard heuristic of "half the smallest sustained
-shift you actually want to be sensitive to"; a smaller `k` makes the
-statistic more sensitive but noisier, a larger `k` requires a stronger,
-longer trend before it accumulates.
+`config.CUSUM_K_RESIDUAL_FRACTION` (0.2) times that signal's
+`residual_thresholds` entry (the percentile-of-|residual| magnitude
+computed alongside it, **not** that signal's residual std); a smaller `k`
+makes the statistic more sensitive but noisier, a larger `k` requires a
+stronger, longer trend before it accumulates.
+
+**Correction (superseding the original design below):** `k` was originally
+`CUSUM_K_FRACTION * residual std` — "half the smallest sustained shift you
+actually want to be sensitive to." Real SynCAN data showed this doesn't
+hold up: residual std shrinks automatically as a forecasting model gets
+more accurate, so a *very well-fit* model mechanically produces a tiny,
+trigger-happy `k` regardless of what actually constitutes a meaningful
+deviation — the `drift` rule fired on ~89% of eligible ticks in one
+real-data run, and stayed high (~82% false-positive rate) across every real
+attack file even after the separate `cusum_mean` fix below, while a
+genuinely attack-free held-out file showed only ~3% (see
+`docs/notes-real-data-scaling.md`) — strong evidence the CUSUM statistic
+was rarely resetting to 0, since `k` was too small to ever meaningfully
+subtract. Tying `k` to `residual_thresholds` (a tail-magnitude percentile
+that doesn't collapse the same way as std) instead keeps it anchored to
+"how large a deviation would actually matter," and lets CUSUM decay back to
+0 promptly after a real perturbation instead of staying pinned near
+threshold for the rest of the file.
 
 **The CUSUM alarm threshold `h` is *also* calibrated by percentile**, not
 picked by a rule of thumb — `calibrate_cusum_thresholds` runs the CUSUM
 recursion over the entire calibration-set residual stream with that
-signal's `k`, then takes the chosen percentile of the resulting statistic as
-`h`. This keeps drift calibration consistent with the same "percentile of an
-empirical distribution measured on validation data" principle the other two
-threshold types follow, rather than introducing a differently-justified
-constant just for this one rule.
+signal's `k` **and that signal's own actual residual mean**, then takes the
+chosen percentile of the resulting statistic as `h`. This keeps drift
+calibration consistent with the same "percentile of an empirical
+distribution measured on validation data" principle the other two threshold
+types follow, rather than introducing a differently-justified constant just
+for this one rule.
 
-**`CalibrationResult` bundles all four outputs together with the percentile
+**`calibrate_cusum_thresholds` also returns (and `CalibrationResult`
+persists) that per-signal residual mean, as `cusum_mean`.** This was
+originally computed and discarded — attribution's `detect_drift` re-ran
+CUSUM against an assumed `mean=0.0` instead, on the reasoning that 0 is the
+theoretical center of an unbiased forecaster's residuals. Real SynCAN data
+showed that assumption doesn't hold well enough in practice: a model can be
+biased by a small but genuinely nonzero amount per signal, and `h` was
+calibrated against deviations from that signal's *real* mean, not 0 — using
+the wrong reference point at detection time caused a false-positive storm
+(the `drift` rule firing on ~89% of eligible ticks in one real-data run; see
+`docs/notes-real-data-scaling.md`). `cusum_mean` closes that gap: the same
+reference point calibration used is now the one detection uses.
+
+**`CalibrationResult` bundles all five outputs together with the percentile
 used to produce them, with JSON persistence** — same pattern as
 `Registry`/`CorrelationGraph`: built once from validation data, saved, and
 loaded unchanged wherever attribution needs it, so a threshold set is never
 silently recomputed against a different data slice than the one it was
 actually calibrated against. NumPy arrays are converted to plain lists for
-JSON (`.tolist()`) and back (`np.array(...)`) on load.
+JSON (`.tolist()`) and back (`np.array(...)`) on load. `load()` reads
+`cusum_mean` with a plain dict lookup, not a `.get(..., default)` fallback —
+an old saved JSON from before this field existed should fail loudly
+(`KeyError`) rather than silently defaulting to 0.0, which would just
+reintroduce the same bug invisibly.
 
 **Shape-mismatch is checked up front, not discovered downstream.**
 `calibrate()` takes the `Registry` as an explicit argument purely to assert
@@ -103,10 +139,13 @@ subtly wrong for every signal.
 ## Function-by-function breakdown
 
 - **`CalibrationResult(percentile, residual_thresholds, staleness_thresholds,
-  cusum_k, cusum_thresholds)`** — dataclass bundling one full calibrated
-  threshold set (all `(n_signals,)` arrays, ordered by `registry.signal_index`
-  like everything else in this codebase). `save`/`load` round-trip it to/from
-  JSON.
+  cusum_k, cusum_thresholds, cusum_mean)`** — dataclass bundling one full
+  calibrated threshold set (all `(n_signals,)` arrays, ordered by
+  `registry.signal_index` like everything else in this codebase). `save`
+  round-trips it to JSON automatically via `asdict`; `load` reads every
+  field with a plain dict lookup (no default fallback), so an old artifact
+  missing a field fails loudly instead of silently reconstructing a subtly
+  wrong result.
 - **`calibrate_residual_thresholds(residuals, percentile)`** —
   `np.percentile(np.abs(residuals), percentile, axis=0)`: the per-signal
   magnitude a residual has to exceed to count as unusual.
@@ -119,14 +158,19 @@ subtly wrong for every signal.
   genuinely depends on the previous one; kept as its own function so
   attribution's drift rule (Step 9) can reuse the identical recursion on
   live data rather than reimplementing it.
-- **`calibrate_cusum_thresholds(residuals, percentile, k_fraction)`** — for
-  each signal: derives `k` from that signal's residual std, runs
-  `cusum_statistic`, and takes the given percentile of the result as `h`.
-  Returns `(k, h)` as a pair of `(n_signals,)` arrays.
+- **`calibrate_cusum_thresholds(residuals, percentile, residual_thresholds,
+  k_fraction)`** — for each signal: derives `k` from that signal's
+  `residual_thresholds` entry (**not** residual std — see the correction
+  above), records that signal's actual residual mean, runs
+  `cusum_statistic` against that mean, and takes the given percentile of
+  the result as `h`. Returns `(k, h, mean)` as a triple of `(n_signals,)`
+  arrays -- `mean` is what `detect_drift` (Step 9) must reuse at detection
+  time, not assume as 0.
 - **`calibrate(residuals, staleness, updated, registry, percentile,
   k_fraction)`** — the orchestrator: validates shapes against the registry,
-  calls all three calibration functions once each, and returns one
-  `CalibrationResult`.
+  computes `residual_thresholds` first (so it's available to
+  `calibrate_cusum_thresholds`), then calls the other two calibration
+  functions, and returns one `CalibrationResult`.
 - **`sensitivity_sweep(residuals, staleness, updated, registry, percentiles,
   k_fraction)`** — calls `calibrate` once per percentile in
   `config.CALIBRATION_PERCENTILES`, returning `{percentile:

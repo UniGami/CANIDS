@@ -13,8 +13,11 @@ where they were actually caught (usually by a test), not smoothed over.
 - [06-branch1-baseline-models.md](06-branch1-baseline-models.md) — Step 7: `models/naive.py`, `models/gru_seq2seq.py`.
 - [07-threshold-calibration.md](07-threshold-calibration.md) — Step 8: `calibration.py`.
 - [08-attribution-layer.md](08-attribution-layer.md) — Step 9: `attribution/rules.py`.
+- [09-evaluation.md](09-evaluation.md) — Step 13: `evaluate.py`.
 
-Later steps (10–13) will get their own files here as they're implemented.
+Steps 10-12 (TCN, Isolation Forest, fusion) will get their own files here as
+they're implemented — Step 13 landed out of order, prompted by a real-data
+false-positive finding that needed proper measurement tooling to chase down.
 
 ## Cross-cutting notes
 
@@ -24,3 +27,11 @@ already-built pieces.
 - [notes-real-data-scaling.md](notes-real-data-scaling.md) — why Branch 1
   training (Steps 5, 7) doesn't scale to the real SynCAN dataset as built,
   measured compute/memory costs, and the fix needed before it does.
+- [notes-false-positive-investigation.md](notes-false-positive-investigation.md) —
+  the real-data false-positive problem found after scaling up: root causes
+  (a calibration mean-mismatch bug, then a deeper CUSUM-sensitivity design
+  issue, then an OR-across-20-signals fusion saturation issue), the fixes
+  applied and their real measured effect, current per-attack-type
+  precision/recall/F1 (and why accuracy is deliberately not the headline
+  metric), and a worked example of what actually flows from the GRU's
+  output through the attribution layer to a final detector verdict.

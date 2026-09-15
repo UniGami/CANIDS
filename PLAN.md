@@ -66,7 +66,10 @@ each step lands.
 - [ ] Step 10 — TCN final model (`models/tcn.py`)
 - [ ] Step 11 — Branch 2: Isolation Forest (`models/isolation_forest.py`)
 - [ ] Step 12 — Fusion (`fusion.py`)
-- [ ] Step 13 — Evaluation & reporting (`evaluate.py`)
+- [x] Step 13 — Evaluation & reporting (`evaluate.py`) -- landed out of
+      order, ahead of Steps 10-12, prompted by a real-data false-positive
+      finding that needed proper per-attack-type/confusion-matrix tooling
+      to diagnose (see docs/notes-real-data-scaling.md)
 
 ## Step 1 — Repo & environment setup
 - `git init` in `c:\Users\sreen\CANIDS` (currently not a git repo) and add a

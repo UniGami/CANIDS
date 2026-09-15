@@ -7,11 +7,16 @@ This wires together everything built so far (Steps 1-9: registry, grid
 alignment, staleness, windowing, correlation graph, GRU baseline, naive
 confidence gating, threshold calibration, attribution rules) into one
 runnable pipeline, for manual inspection of what the model + attribution
-layer actually predict on a given sequence. It is deliberately NOT Step 13
-(evaluate.py) -- there is no persisted precision/recall report here, no
-Isolation Forest (Branch 2, Step 11), and no fusion (Step 12); the "quick
-tally" section below is a rough sanity check, not a reported metric. The
-verdict printed is Branch 1 + attribution only.
+layer actually predict on a given sequence -- one sequence at a time, in
+detail. It is deliberately NOT a replacement for Step 13
+(canids.evaluate / scripts/run_evaluation.py), which reports real
+per-attack-type precision/recall/F1, a rule-collision confusion matrix, and
+a threshold-sensitivity sweep across every attack type at once -- see
+docs/09-evaluation.md. This script's "quick tally" section is a rough,
+single-run sanity check for whatever one CSV you pointed it at, not a
+reported metric; use run_evaluation.py for the aggregate picture. There is
+also still no Isolation Forest (Branch 2, Step 11) or fusion (Step 12)
+anywhere -- the verdict printed here is Branch 1 + attribution only.
 
 Usage (from the repo root, with the canids environment active):
     python scripts/run_detector.py
@@ -47,7 +52,6 @@ import argparse
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 
 from canids.attribution.rules import attribute
 from canids.calibration import calibrate
@@ -63,57 +67,13 @@ from canids.correlation import build_correlation_graph
 from canids.data.grid import align_to_grid
 from canids.data.loader import load_attack, load_normal, split_train_val
 from canids.data.staleness import compute_staleness
-from canids.data.synthetic import load_attack_window
 from canids.data.windowing import build_joint_vector, valid_forecast_ticks
+from canids.evaluate import resolve_ground_truth
 from canids.models import naive
 from canids.models.gru_seq2seq import GRUForecaster, predict_streaming, train_streaming
 from canids.registry import build_registry
 
 ATTACK_TYPES = ["replay", "plateau", "drift", "suppression", "flooding", "fuzzing"]
-
-
-def _tick_ground_truth_from_labels(df: pd.DataFrame, times: np.ndarray, step: float) -> np.ndarray:
-    """Fallback ground truth for display only, used when no attack-window
-    sidecar JSON is found: True at any tick that a labeled-attack raw frame
-    (any ID) landed on, using the same round-to-nearest-tick rule
-    data/grid.py uses. Coarser than a real per-signal ground truth (a
-    single-target attack taints the whole tick, not just the attacked
-    signal's slot), and structurally blind to suppression (see
-    _resolve_ground_truth) -- good enough for eyeballing a printed example,
-    not a substitute for Step 13's formal evaluation.
-    """
-    gt = np.zeros(len(times), dtype=bool)
-    attacked = df[df["Label"] != 0]
-    if len(attacked) == 0:
-        return gt
-    t_min = times[0]
-    tick_idx = np.clip(np.round((attacked["Time"].to_numpy() - t_min) / step).astype(int), 0, len(times) - 1)
-    gt[tick_idx] = True
-    return gt
-
-
-def _resolve_ground_truth(
-    test_csv: Path, test_df: pd.DataFrame, times: np.ndarray, step: float
-) -> tuple[np.ndarray, str]:
-    """Prefer the attack-window sidecar JSON (data/synthetic.py's
-    write_attack_window, alongside the synthetic attack CSVs) as ground
-    truth: it's a time range, so it's defined uniformly across all six
-    attack types -- including suppression, whose whole signature is the
-    ABSENCE of rows, so there is no Label==1 row for the Label-column
-    fallback to find at all. Falls back to scanning the Label column for any
-    CSV without a matching sidecar (e.g. real SynCAN, or a user-supplied
-    file).
-    """
-    window_path = test_csv.with_name(f"{test_csv.stem}_window.json")
-    if window_path.exists():
-        window = load_attack_window(window_path)
-        gt = (times >= window.start_time) & (times < window.end_time)
-        source = (
-            f"attack window sidecar {window_path.name}: {window.attack_type} on "
-            f"{window.target_id}.sig{window.target_slot}, t=[{window.start_time:.2f}, {window.end_time:.2f})"
-        )
-        return gt, source
-    return _tick_ground_truth_from_labels(test_df, times, step), "Label column in test CSV (no window sidecar found)"
 
 
 def _print_header(title: str) -> None:
@@ -256,7 +216,7 @@ def main() -> None:
         confidence_mask=confidence_mask,
     )
     detector_flag = np.array([any(label is not None for label in row) for row in result.primary_label])
-    gt_full, gt_source = _resolve_ground_truth(test_csv, test_df, test_alignment.times, grid_step)
+    gt_full, gt_source = resolve_ground_truth(test_csv, test_df, test_alignment.times, grid_step)
     gt_at_ticks = gt_full[tick_indices]
 
     _print_header("Quick tally (informal -- see Step 13 for a real evaluation)")
