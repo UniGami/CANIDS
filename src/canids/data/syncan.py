@@ -5,12 +5,25 @@ files, each of which contains exactly one CSV.
 Normalizes the real files' schema to the canonical one data/loader.py and
 everything downstream (registry, grid alignment, ...) already expects:
 
-- **Column names**: the real CSV header is
+- **Column names**: the real CSV header, where present, is
   `Label,Time,ID,Signal1,Signal2,Signal3,Signal4` -- the SynCAN README
   documents `Signal1_of_ID`..`Signal4_of_ID`, but the files actually shipped
   in the zip omit that suffix. Renamed here, once, at the boundary, so
   nothing downstream needs to know real data ever looked different from the
   synthetic generator's output.
+- **Header inconsistency across files**: train_1.csv ships with a header
+  row; train_2.csv does not (confirmed by inspection -- its first line is
+  already a data row). Every row also has only as many trailing Signal
+  columns as that row's CAN ID actually carries (e.g. one id8 row has just
+  Signal1; a four-signal id10 row has all four) -- there is no padding to a
+  fixed width in the raw file. Relying on pandas' default header/column-count
+  inference (as an earlier version of this module did) works by luck on
+  train_1 (whose first rows happen to expose enough columns before any
+  narrower row) and breaks on train_2 (`ParserError: Expected 5 fields ...`)
+  the moment a narrow row precedes a wider one. `_read_inner_csv` therefore
+  always reads headerless with an explicit 7-name schema and lets pandas pad
+  short rows with NaN, then drops a leading row that turns out to have been
+  a literal header.
 - **Time units**: the real files record Time in milliseconds (confirmed by
   inspecting train_1.csv: consecutive same-ID gaps of exactly 15/30/45,
   matching the README's per-ID periods in ms). Every other module in this
@@ -46,6 +59,7 @@ from canids.data.loader import REQUIRED_COLUMNS
 
 RAW_SIGNAL_COLUMNS = ["Signal1", "Signal2", "Signal3", "Signal4"]
 CANONICAL_SIGNAL_COLUMNS = ["Signal1_of_ID", "Signal2_of_ID", "Signal3_of_ID", "Signal4_of_ID"]
+RAW_COLUMNS = ["Label", "Time", "ID", *RAW_SIGNAL_COLUMNS]
 
 TRAIN_FILES = ["train_1", "train_2", "train_3", "train_4"]
 
@@ -67,6 +81,18 @@ def _read_inner_csv(master_zip: Path, inner_stem: str, nrows: int | None = None)
     as enough rows have been parsed -- it genuinely limits work done, not
     just what's kept, so a small `nrows` makes this fast even against the
     ~350MB train members.
+
+    Always reads headerless with RAW_COLUMNS as explicit names: some real
+    SynCAN files ship a header row and some don't (train_1.csv does,
+    train_2.csv doesn't), and every row has only as many trailing Signal
+    columns as its CAN ID actually carries, with no padding to 7 fields in
+    the raw file. Letting pandas infer the header/column count from the
+    first rows (as opposed to fixing both explicitly) works by luck on some
+    files and raises `ParserError: Expected N fields ...` on others the
+    moment a narrower row precedes a wider one -- explicit `names=` avoids
+    that inference entirely and lets pandas pad short rows with NaN
+    instead. A literal header row, if present, is then dropped by checking
+    whether the first parsed row's `Label` field is non-numeric.
     """
     with zipfile.ZipFile(master_zip) as master:
         matches = [n for n in master.namelist() if n.endswith(f"{inner_stem}.zip")]
@@ -78,7 +104,17 @@ def _read_inner_csv(master_zip: Path, inner_stem: str, nrows: int | None = None)
         if len(csv_matches) != 1:
             raise ValueError(f"expected exactly one member ending in {inner_stem}.csv inside {matches[0]}, found {csv_matches}")
         with inner.open(csv_matches[0]) as f:
-            return pd.read_csv(f, nrows=nrows)
+            n_to_read = None if nrows is None else nrows + 1  # +1 in case row 0 is a header we'll drop
+            df = pd.read_csv(f, header=None, names=RAW_COLUMNS, nrows=n_to_read, dtype=str)
+    if len(df) and pd.to_numeric(df["Label"].iloc[[0]], errors="coerce").isna().iloc[0]:
+        df = df.iloc[1:].reset_index(drop=True)
+    if nrows is not None:
+        df = df.iloc[:nrows].reset_index(drop=True)
+    df["Label"] = pd.to_numeric(df["Label"])
+    df["Time"] = pd.to_numeric(df["Time"])
+    for col in RAW_SIGNAL_COLUMNS:
+        df[col] = pd.to_numeric(df[col])
+    return df
 
 
 def normalize(df: pd.DataFrame) -> pd.DataFrame:
