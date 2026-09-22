@@ -15,8 +15,15 @@ Usage:
     python scripts/inspect_pipeline.py --normal-csv data/raw/syncan_train_1.csv
     python scripts/inspect_pipeline.py --stages grid,staleness --signal ID_B_sig1
     python scripts/inspect_pipeline.py --train --test-csv data/synthetic/attack_suppression.csv
-    python scripts/inspect_pipeline.py --train --test-csv data/synthetic/attack_suppression.csv \
-        --model-path models/gru_syncan_train1.pt
+    python scripts/inspect_pipeline.py --train --test-csv data/synthetic/attack_suppression.csv --model-path models/gru_syncan_train1.pt
+
+    # inspect raw/grid/staleness/windowing/scaling against an attack CSV instead of
+    # --normal-csv (e.g. to see staleness counters during a real suppression attack) --
+    # --normal-csv still has to be the matching-schema file the registry is built from:
+    python scripts/inspect_pipeline.py --stages staleness --normal-csv data/raw/syncan_train_1.csv --inspect-csv data/raw/syncan_test_suppression.csv
+
+    # just the partner correlation graph (Step 6/7, offline from --normal-csv only):
+    python scripts/inspect_pipeline.py --stages correlation --normal-csv data/raw/syncan_train_1.csv
 """
 
 from __future__ import annotations
@@ -28,8 +35,10 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
+from canids.attribution.rules import attribute
 from canids.calibration import calibrate
 from canids.config import DEFAULT_CALIBRATION_PERCENTILE, GRID_STEP_SECONDS, RANDOM_SEED, SEQUENCE_LENGTH
+from canids.correlation import build_correlation_graph
 from canids.data.grid import align_to_grid
 from canids.data.loader import load_attack, load_normal, split_train_val
 from canids.data.scaling import fit_scaler
@@ -40,11 +49,15 @@ from canids.models import naive
 from canids.models.gru_seq2seq import GRUForecaster, load_model, predict_streaming, save_model, train_streaming
 from canids.registry import Registry, build_registry
 
-ALL_STAGES = ["raw", "grid", "staleness", "windowing", "scaling"]
+ALL_STAGES = ["raw", "grid", "staleness", "windowing", "scaling", "correlation"]
 MAX_SIGNALS_PLOTTED = 8  # cap small-multiples so real SynCAN's 20 signals stay legible
 AUTO_ZOOM_SECONDS = 20.0  # cap for the auto-zoomed predicted/actual plot -- the ground-truth
 # attack window itself can span most of a real SynCAN test file (attacks recur many times
 # across a long recording), so zooming to its full extent can still overplot into a smear
+AUTO_ZOOM_SECONDS_FINE = 2.0  # cap for grid/staleness plots, which show raw per-tick detail --
+# real SynCAN signals can update every ~10-40ms, so even 20s worth of ticks crams hundreds of
+# sawtooth cycles into the plot width and blurs into a solid-looking block; 2s keeps individual
+# cycles resolvable
 
 
 def _print_header(title: str) -> None:
@@ -108,8 +121,42 @@ def _resolve_ground_truth(test_csv: Path, times: np.ndarray, step: float, test_d
     return gt, (lo, hi)
 
 
-def stage_raw(csv_path: Path, out_dir: Path) -> None:
-    df = load_normal(csv_path) if "attack" not in csv_path.stem else load_attack(csv_path)
+def _resolve_time_range(csv_path: Path, df, times: np.ndarray, step: float, time_range, max_seconds: float = AUTO_ZOOM_SECONDS):
+    """Resolve the effective plot time-range and ground-truth attack window.
+
+    Honors an explicit --time-range unchanged. Otherwise auto-zooms: to the
+    csv's ground-truth attack window if it has labeled attack rows (capped at
+    max_seconds, since that window itself can span most of a real SynCAN test
+    file), else to the first max_seconds of the file -- real SynCAN data is
+    long enough that an un-zoomed plot overplots into an unreadable smear
+    either way. Returns (effective_time_range, gt_range); gt_range is None
+    for CSVs with no labeled attack rows (e.g. normal data).
+    """
+    gt_mask, gt_range = _resolve_ground_truth(csv_path, times, step, df)
+    if time_range is not None:
+        return time_range, gt_range
+
+    if gt_range is not None:
+        duration = gt_range[1] - gt_range[0]
+        if duration <= max_seconds:
+            pad = max((max_seconds - duration) / 2, max_seconds * 0.1)
+            time_range = (gt_range[0] - pad, gt_range[1] + pad)
+        else:
+            # ground-truth attack rows span most of the file (e.g. an attack that
+            # recurs throughout a long recording) -- show a readable slice starting
+            # at the first attack tick instead of the whole (unplottable) extent.
+            lead_in = max_seconds * 0.1
+            time_range = (gt_range[0] - lead_in, gt_range[0] - lead_in + max_seconds)
+    else:
+        time_range = (times[0], min(times[0] + max_seconds, times[-1]))
+    print(
+        f"no --time-range given -- auto-zoomed to t=[{time_range[0]:.2f}, {time_range[1]:.2f}] "
+        f"(pass --time-range to override)"
+    )
+    return time_range, gt_range
+
+
+def stage_raw(csv_path: Path, df) -> None:
     _print_header("Stage 1: Raw CSV")
     print(f"file: {csv_path}")
     print(f"rows: {len(df)}   time span: [{df['Time'].min():.3f}, {df['Time'].max():.3f}]s")
@@ -119,8 +166,7 @@ def stage_raw(csv_path: Path, out_dir: Path) -> None:
     print(df.head(5).to_string(index=False))
 
 
-def stage_grid(df, registry: Registry, step: float, signal_arg: str | None, out_dir: Path, time_range=None):
-    alignment = align_to_grid(df, registry, step=step)
+def stage_grid(alignment, registry: Registry, step: float, signal_arg: str | None, out_dir: Path, time_range=None, gt_range=None):
     _print_header("Stage 2: Grid Alignment")
     print(f"grid step: {step}s   n_ticks: {len(alignment.times)}")
     print(f"{'signal':12s} {'n_updates':>10s} {'warm-up NaN ticks':>18s}")
@@ -135,24 +181,27 @@ def stage_grid(df, registry: Registry, step: float, signal_arg: str | None, out_
     fig, axes = plt.subplots(len(signals), 1, figsize=(10, 2.2 * len(signals)), squeeze=False, sharex=True)
     for ax, entry in zip(axes[:, 0], signals):
         j = entry.signal_index
+        if gt_range:
+            ax.axvspan(gt_range[0], gt_range[1], color="#C44E52", alpha=0.12, label="ground-truth attack")
         t = alignment.times[mask]
         ax.plot(t, alignment.values[mask, j], color="#4C72B0", lw=1, label="grid-aligned (forward-filled)")
         raw_mask = alignment.updated[:, j] & mask
         ax.scatter(alignment.times[raw_mask], alignment.values[raw_mask, j], color="#C44E52", s=14, zorder=3, label="genuine transmission")
         ax.set_ylabel(entry.name, fontsize=8)
         ax.legend(fontsize=6, loc="upper right")
+    if time_range is not None:
+        axes[-1, 0].set_xlim(time_range)  # axvspan's extent still counts toward autoscale
     axes[-1, 0].set_xlabel("time (s)")
-    range_note = f" (t=[{time_range[0]:.2f}, {time_range[1]:.2f}])" if time_range else " (full range -- pass --time-range for a readable zoom)"
+    range_note = f" (t=[{time_range[0]:.2f}, {time_range[1]:.2f}])" if time_range else ""
     fig.suptitle(f"Grid Alignment: raw transmissions vs. forward-filled grid{range_note}")
     fig.tight_layout()
     out_path = out_dir / "grid_alignment.png"
     _savefig(fig, out_path)
     plt.close(fig)
     print(f"\nsaved: {out_path}")
-    return alignment
 
 
-def stage_staleness(alignment, registry: Registry, signal_arg: str | None, out_dir: Path, time_range=None):
+def stage_staleness(alignment, registry: Registry, signal_arg: str | None, out_dir: Path, time_range=None, gt_range=None):
     staleness = compute_staleness(alignment)
     _print_header("Stage 3: Staleness Counters")
     print(f"{'signal':12s} {'max':>6s} {'mean':>8s}")
@@ -165,10 +214,14 @@ def stage_staleness(alignment, registry: Registry, signal_arg: str | None, out_d
     fig, axes = plt.subplots(len(signals), 1, figsize=(10, 2.0 * len(signals)), squeeze=False, sharex=True)
     for ax, entry in zip(axes[:, 0], signals):
         j = entry.signal_index
+        if gt_range:
+            ax.axvspan(gt_range[0], gt_range[1], color="#C44E52", alpha=0.12, label="ground-truth attack")
         ax.plot(alignment.times[mask], staleness[mask, j], color="#55A868", lw=1, marker=".", markersize=3)
         ax.set_ylabel(entry.name, fontsize=8)
+    if time_range is not None:
+        axes[-1, 0].set_xlim(time_range)  # axvspan's extent still counts toward autoscale
     axes[-1, 0].set_xlabel("time (s)")
-    range_note = f" (t=[{time_range[0]:.2f}, {time_range[1]:.2f}])" if time_range else " (full range -- pass --time-range for a readable zoom)"
+    range_note = f" (t=[{time_range[0]:.2f}, {time_range[1]:.2f}])" if time_range else ""
     fig.suptitle(f"Staleness Counters (ticks since last genuine transmission){range_note}")
     fig.tight_layout()
     out_path = out_dir / "staleness.png"
@@ -223,10 +276,29 @@ def stage_scaling(joint, registry: Registry, signal_arg: str | None, out_dir: Pa
     print(f"\nsaved: {out_path}")
 
 
+def stage_correlation(normal_df, registry: Registry, step: float):
+    """Builds and prints the partner correlation graph (Step 6/7's offline,
+    normal-only precomputation that replay attribution depends on) -- always
+    from --normal-csv, regardless of --inspect-csv, since the graph is
+    defined as "functionally correlated under normal operation" and would be
+    meaningless built from an attack CSV.
+    """
+    joint = build_joint_vector(align_to_grid(normal_df, registry, step=step), registry)
+    correlation = build_correlation_graph(joint, registry)
+    _print_header(f"Stage 6: Correlation Graph ({len(correlation.edges)} edges, {correlation.n_folds}-fold stable)")
+    if not correlation.edges:
+        print("  (no stable partner edges found)")
+    for edge in correlation.edges:
+        a = registry.entries[edge.signal_a].name
+        b = registry.entries[edge.signal_b].name
+        print(f"  {a} <-> {b}   strength={edge.strength:.4f}  fold_agreement={edge.fold_agreement}/{correlation.n_folds}")
+    return correlation
+
+
 def stage_train_predict(
     normal_csv: Path, test_csv: Path, registry: Registry, step: float, sequence_length: int,
     epochs: int, batch_size: int, percentile: float, seed: int, signal_arg: str | None, out_dir: Path,
-    time_range=None, model_path: Path | None = None,
+    time_range=None, model_path: Path | None = None, correlation=None,
 ):
     normal_df = load_normal(normal_csv)
     train_df, val_df = split_train_val(normal_df)
@@ -280,24 +352,34 @@ def stage_train_predict(
         print(f"ground-truth attack window: t=[{gt_range[0]:.2f}, {gt_range[1]:.2f}]")
     print(f"ticks evaluated: {len(tick_indices)}   ground-truth attack ticks: {int(gt_at_ticks.sum())}")
 
-    if time_range is None:
-        if gt_range is not None:
-            duration = gt_range[1] - gt_range[0]
-            if duration <= AUTO_ZOOM_SECONDS:
-                pad = max((AUTO_ZOOM_SECONDS - duration) / 2, 2.0)
-                time_range = (gt_range[0] - pad, gt_range[1] + pad)
-            else:
-                # ground-truth attack rows span most of the file (e.g. an attack that
-                # recurs throughout a long recording) -- show a readable slice starting
-                # at the first attack tick instead of the whole (unplottable) extent.
-                lead_in = 2.0
-                time_range = (gt_range[0] - lead_in, gt_range[0] - lead_in + AUTO_ZOOM_SECONDS)
-        else:
-            time_range = (test_times[0], min(test_times[0] + AUTO_ZOOM_SECONDS, test_times[-1]))
-        print(
-            f"no --time-range given -- auto-zoomed to t=[{time_range[0]:.2f}, {time_range[1]:.2f}] "
-            f"(pass --time-range to override)"
-        )
+    _print_header("Detection Summary (full attribution: suppression/plateau/drift/replay, OR-fused)")
+    if correlation is None:
+        correlation = stage_correlation(normal_df, registry, step)
+    staleness_at_ticks = compute_staleness(test_alignment)[tick_indices]
+    values_at_ticks = test_alignment.values[tick_indices]
+    result = attribute(
+        residuals_test, values_at_ticks, staleness_at_ticks, calibration, correlation, registry,
+        confidence_mask=confidence_mask,
+    )
+    detector_flag = np.array([any(label is not None for label in row) for row in result.primary_label])
+    print(f"detector-flagged ticks (any signal's primary_label set): {int(detector_flag.sum())} / {len(tick_indices)}")
+    print(f"  overlap (flagged AND ground-truth):     {int((detector_flag & gt_at_ticks).sum())}")
+    print(f"  flagged but no ground-truth label:      {int((detector_flag & ~gt_at_ticks).sum())}")
+    print(f"  ground-truth but not flagged:            {int((~detector_flag & gt_at_ticks).sum())}")
+    print(
+        f"rule firings (signal-tick pairs): suppression={int(result.suppression_fired.sum())}  "
+        f"plateau={int(result.plateau_fired.sum())}  drift={int(result.drift_fired.sum())}  "
+        f"replay={int(result.replay_fired.sum())}"
+    )
+    print(f"\n{'signal':12s} {'confidence':>11s}  primary_label counts (across all evaluated ticks)")
+    for entry in registry.entries:
+        j = entry.signal_index
+        labels, counts = np.unique(result.primary_label[:, j].astype(str), return_counts=True)
+        label_summary = ", ".join(f"{l}:{c}" for l, c in zip(labels, counts) if l != "None") or "-"
+        conf = "trustworthy" if confidence_mask[j] else "LOW CONF"
+        print(f"{entry.name:12s} {conf:>11s}  {label_summary}")
+
+    time_range, _ = _resolve_time_range(test_csv, test_df, test_alignment.times, step, time_range)
 
     mask = _time_slice(test_times, time_range)
     signals = _select_signals(registry, signal_arg)
@@ -336,6 +418,12 @@ def main() -> None:
     parser.add_argument("--normal-csv", type=Path, default=Path("data/synthetic/normal.csv"))
     parser.add_argument("--test-csv", type=Path, default=None, help="required with --train")
     parser.add_argument("--stages", default=",".join(ALL_STAGES), help=f"comma-separated subset of {ALL_STAGES}")
+    parser.add_argument(
+        "--inspect-csv", type=Path, default=None,
+        help="CSV to run raw/grid/staleness/windowing/scaling stages against, e.g. an attack CSV -- "
+        "may contain labeled attack rows (unlike --normal-csv, which must be normal-only). Defaults to "
+        "--normal-csv. --normal-csv must still be the matching-schema file the registry is built from.",
+    )
     parser.add_argument("--signal", default=None, help="restrict per-signal plots to one signal name (default: first few)")
     parser.add_argument(
         "--time-range", default=None,
@@ -369,15 +457,21 @@ def main() -> None:
     alignment = None
     joint = None
 
-    if "raw" in stages:
-        stage_raw(args.normal_csv, out_dir)
+    inspect_csv = args.inspect_csv or args.normal_csv
+    df = load_attack(inspect_csv)  # works for both normal-only and labeled-attack CSVs
 
-    df = load_normal(args.normal_csv)
+    if "raw" in stages:
+        stage_raw(inspect_csv, df)
+
     if "grid" in stages or "staleness" in stages or "windowing" in stages or "scaling" in stages:
-        alignment = stage_grid(df, registry, args.grid_step, args.signal, out_dir, time_range)
+        alignment = align_to_grid(df, registry, step=args.grid_step)
+        effective_time_range, gt_range = _resolve_time_range(
+            inspect_csv, df, alignment.times, args.grid_step, time_range, max_seconds=AUTO_ZOOM_SECONDS_FINE
+        )
+        stage_grid(alignment, registry, args.grid_step, args.signal, out_dir, effective_time_range, gt_range)
 
     if "staleness" in stages:
-        stage_staleness(alignment, registry, args.signal, out_dir, time_range)
+        stage_staleness(alignment, registry, args.signal, out_dir, effective_time_range, gt_range)
 
     if "windowing" in stages or "scaling" in stages:
         joint, _ = stage_windowing(alignment, registry, args.sequence_length)
@@ -385,13 +479,18 @@ def main() -> None:
     if "scaling" in stages:
         stage_scaling(joint, registry, args.signal, out_dir)
 
+    correlation = None
+    if "correlation" in stages or args.train:
+        # always from --normal-csv, not --inspect-csv -- see stage_correlation's docstring
+        correlation = stage_correlation(load_normal(args.normal_csv), registry, args.grid_step)
+
     if args.train:
         if args.test_csv is None:
             raise SystemExit("--train requires --test-csv")
         stage_train_predict(
             args.normal_csv, args.test_csv, registry, args.grid_step, args.sequence_length,
             args.epochs, args.batch_size, args.percentile, args.seed, args.signal, out_dir,
-            time_range, args.model_path,
+            time_range, args.model_path, correlation,
         )
 
 
