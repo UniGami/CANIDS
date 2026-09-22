@@ -86,6 +86,40 @@ def resolve_ground_truth(test_csv: Path, test_df: pd.DataFrame, times: np.ndarra
     return tick_ground_truth_from_labels(test_df, times, step), "Label column in test CSV (no window sidecar found)"
 
 
+@dataclass
+class ResidualStats:
+    signal_name: str
+    bias: float  # mean(residual) -- systematic over/under-prediction
+    mae: float  # mean(|residual|)
+    mse: float  # mean(residual^2), comparable to the training loop's MSELoss
+    std: float
+
+
+def per_signal_residual_stats(residuals: np.ndarray, registry: Registry) -> list[ResidualStats]:
+    """Per-signal forecast-quality breakdown of a (n_ticks, n_signals)
+    residual array (y - pred), computed BEFORE calibrate()/attribute() run
+    -- lets a caller check forecast quality in isolation from the
+    attribution/fusion layer's rule-firing behavior. See
+    docs/notes-false-positive-investigation.md: real-data precision problems
+    were root-caused to CUSUM/fusion, not the GRU forecaster, and this is
+    the direct way to confirm that split independently.
+    """
+    stats = []
+    for entry in registry.entries:
+        j = entry.signal_index
+        col = residuals[:, j]
+        stats.append(
+            ResidualStats(
+                signal_name=entry.name,
+                bias=float(np.mean(col)),
+                mae=float(np.mean(np.abs(col))),
+                mse=float(np.mean(col**2)),
+                std=float(np.std(col)),
+            )
+        )
+    return stats
+
+
 def detector_flags_from_attribution(attribution_result: AttributionResult) -> np.ndarray:
     """A tick counts as flagged if ANY signal's primary_label is set --
     matches scripts/run_detector.py's own "detector verdict" definition.
@@ -186,7 +220,8 @@ def evaluate_attack_csv(
     plateau_min_persistence_ticks: int = PLATEAU_MIN_PERSISTENCE_TICKS,
     drift_cusum_decay: float = CUSUM_ADAPTIVE_DECAY,
     value_range_gate: bool = True,
-) -> tuple[AttributionResult, np.ndarray, np.ndarray]:
+    return_residuals: bool = False,
+) -> tuple[AttributionResult, np.ndarray, np.ndarray] | tuple[AttributionResult, np.ndarray, np.ndarray, np.ndarray]:
     """Run the full detect + attribute pipeline against one attack CSV,
     reusing predict_streaming (never materializes a full window array, see
     docs/notes-real-data-scaling.md) and attribution.attribute. Returns
@@ -199,6 +234,14 @@ def evaluate_attack_csv(
     `drift_cusum_decay`, and `value_range_gate` all pass through to
     attribute()'s real-data false-positive mitigations -- see
     docs/notes-false-positive-investigation.md.
+
+    `return_residuals=True` additionally returns the raw GRU forecast
+    residuals (y - pred, shape (n_evaluated_ticks, n_signals)) computed
+    before attribute() runs -- lets a caller inspect pre-attribution
+    forecast quality on this CSV directly, to separate "is the forecaster
+    good" from "is the attribution layer's rule firing behavior good" (see
+    docs/notes-false-positive-investigation.md's root-cause analysis).
+    Off by default so every existing caller's return shape is unchanged.
     """
     test_df = load_attack(attack_csv_path)
     test_alignment = align_to_grid(test_df, registry, step=grid_step)
@@ -226,6 +269,8 @@ def evaluate_attack_csv(
     gt_full, _source = resolve_ground_truth(attack_csv_path, test_df, test_alignment.times, grid_step)
     ground_truth = gt_full[tick_indices]
 
+    if return_residuals:
+        return result, ground_truth, tick_indices, residuals
     return result, ground_truth, tick_indices
 
 

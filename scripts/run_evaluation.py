@@ -30,6 +30,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import numpy as np
+
 from canids.calibration import calibrate
 from canids.config import (
     CUSUM_ADAPTIVE_DECAY,
@@ -50,7 +52,7 @@ from canids.data.staleness import compute_staleness
 from canids.data.syncan import TEST_FILES as SYNCAN_TEST_FILES
 from canids.data.synthetic import ATTACK_TYPES
 from canids.data.windowing import build_joint_vector, valid_forecast_ticks
-from canids.evaluate import evaluate_all
+from canids.evaluate import evaluate_all, evaluate_attack_csv, per_signal_residual_stats
 from canids.models import naive
 from canids.models.gru_seq2seq import GRUForecaster, load_model, predict_streaming, save_model, train_streaming
 from canids.registry import build_registry
@@ -119,6 +121,13 @@ def main() -> None:
         help="also run the threshold-sensitivity report across config.CALIBRATION_PERCENTILES "
         "(re-runs detection once per percentile per attack type -- real extra work, off by default)",
     )
+    parser.add_argument(
+        "--skip-residual-report", action="store_true",
+        help="skip the pre-attribution GRU forecast residual report (per-signal bias/MAE/MSE/std on "
+        "validation data and each attack CSV) -- shown by default so forecast quality can be checked "
+        "independently of attribution/calibration behavior; the attack-CSV part re-runs one extra "
+        "predict_streaming pass per attack type",
+    )
     args = parser.parse_args()
 
     registry = build_registry([args.normal_csv])
@@ -157,6 +166,12 @@ def main() -> None:
     naive_val_residuals = naive.residuals_streaming(val_joint, registry, val_ticks)
     confidence_mask = naive.confidence_gate(val_residuals, naive_val_residuals)
 
+    if not args.skip_residual_report:
+        _print_header("Pre-attribution forecast residuals (validation)")
+        print(f"  overall: MAE={np.mean(np.abs(val_residuals)):.5f}  MSE={np.mean(val_residuals**2):.5f}")
+        for s in per_signal_residual_stats(val_residuals, registry):
+            print(f"  {s.signal_name:12s} bias={s.bias:+.5f}  MAE={s.mae:.5f}  MSE={s.mse:.5f}  std={s.std:.5f}")
+
     val_staleness = compute_staleness(val_alignment)
     calibration = calibrate(
         val_residuals, val_alignment.values, val_staleness, val_alignment.updated, registry, percentile=args.percentile
@@ -178,6 +193,23 @@ def main() -> None:
     if not attack_csvs:
         print("no attack CSVs found -- nothing to evaluate.")
         return
+
+    if not args.skip_residual_report:
+        for attack_type, path in attack_csvs.items():
+            _, _, _, attack_residuals = evaluate_attack_csv(
+                model, registry, calibration, correlation, path,
+                sequence_length=args.sequence_length, batch_size=args.batch_size, grid_step=args.grid_step,
+                confidence_mask=confidence_mask,
+                drift_min_persistence_ticks=args.drift_persistence_ticks,
+                plateau_min_persistence_ticks=args.plateau_persistence_ticks,
+                drift_cusum_decay=args.drift_cusum_decay,
+                value_range_gate=not args.no_value_range_gate,
+                return_residuals=True,
+            )
+            _print_header(f"Pre-attribution forecast residuals ({attack_type})")
+            print(f"  overall: MAE={np.mean(np.abs(attack_residuals)):.5f}  MSE={np.mean(attack_residuals**2):.5f}")
+            for s in per_signal_residual_stats(attack_residuals, registry):
+                print(f"  {s.signal_name:12s} bias={s.bias:+.5f}  MAE={s.mae:.5f}  MSE={s.mse:.5f}  std={s.std:.5f}")
 
     result = evaluate_all(
         model, registry, calibration, correlation, attack_csvs, confidence_mask=confidence_mask,
