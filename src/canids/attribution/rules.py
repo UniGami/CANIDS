@@ -500,7 +500,7 @@ def attribute(
         suppression_fired, plateau_fired, staleness, frozen_streak_length(values),
         calibration, plateau_min_frozen_streak_ticks,
     )
-    drift_fired = drift_fired & ~(strength > cascade_discount_strength_threshold)
+    drift_fired = drift_fired & ~(strength >= cascade_discount_strength_threshold)
 
     effective_confidence_weight = confidence_weight
     if effective_confidence_weight is None and confidence_mask is not None:

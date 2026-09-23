@@ -221,6 +221,7 @@ def evaluate_attack_csv(
     drift_cusum_decay: float = CUSUM_ADAPTIVE_DECAY,
     value_range_gate: bool = True,
     confidence_weight: np.ndarray | None = None,
+    return_residuals: bool = False,
 ) -> tuple[AttributionResult, np.ndarray, np.ndarray]:
     """Run the full detect + attribute pipeline against one attack CSV,
     reusing predict_streaming (never materializes a full window array, see
