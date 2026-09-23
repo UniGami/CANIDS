@@ -589,3 +589,102 @@ def test_detect_replay_partner_weight_below_min_partner_strength_does_not_corrob
     confidence_weight = np.array([0.1, 1.0])
     fired = detect_replay(residuals, calibration, graph, no_fire, no_fire, confidence_weight=confidence_weight)
     np.testing.assert_array_equal(fired, [[False, False]])
+
+
+def test_detect_replay_excludes_signals_with_drift_signature():
+    """Direct unit test for detect_replay's `~drift_fired` exclusion half
+    -- only the `plateau_fired` half was previously tested directly (see
+    test_detect_replay_excludes_signals_with_plateau_or_drift_signature).
+    """
+    calibration = _calibration(n_signals=2, residual_thresholds=[1.0, 1.0])
+    graph = CorrelationGraph(edges=[CorrelationEdge(signal_a=0, signal_b=1, strength=0.9, fold_agreement=5)], n_folds=5)
+    residuals = np.array([[2.0, 2.0]])
+
+    plateau_fired = np.array([[False, False]])
+    drift_fired = np.array([[True, False]])
+    fired = detect_replay(residuals, calibration, graph, plateau_fired, drift_fired)
+    # signal 0 has a drift signature -> excluded even though its residual spikes with partner corroboration.
+    np.testing.assert_array_equal(fired, [[False, True]])
+
+
+# --- cascade discount also gates replay TARGET eligibility (suppression-file FP fix) ---
+
+
+def test_detect_replay_cascade_discounted_target_does_not_fire():
+    """cascade_discounted excludes a signal from being a replay TARGET, but
+    not from being a corroborating PARTNER: signal 0 is cascade-discounted
+    and should not fire replay itself, but its own residual spike should
+    still corroborate signal 1.
+    """
+    calibration = _calibration(n_signals=2, residual_thresholds=[1.0, 1.0])
+    graph = CorrelationGraph(edges=[CorrelationEdge(signal_a=0, signal_b=1, strength=0.9, fold_agreement=5)], n_folds=5)
+    no_fire = np.zeros((1, 2), dtype=bool)
+
+    residuals = np.array([[2.0, 2.0]])
+    cascade_discounted = np.array([[True, False]])  # signal 0 is cascade-discounted, signal 1 is not
+    fired = detect_replay(residuals, calibration, graph, no_fire, no_fire, cascade_discounted=cascade_discounted)
+    np.testing.assert_array_equal(fired, [[False, True]])
+
+
+def test_attribute_cascade_discount_prevents_replay_from_absorbing_discounted_drift():
+    """Core regression test for the suppression-file false-positive fix:
+    signal 0 is strongly, genuinely suppressed; signal 1's residual
+    independently crosses drift's CUSUM threshold as cascade fallout (same
+    setup as test_attribute_cascade_discount_suppresses_drift_caused_by_unrelated_suppression),
+    but this time signal 1 also has a correlation-graph partner (signal 2)
+    whose residual spikes at the same ticks -- enough to satisfy replay's
+    corroboration check. Before this fix, signal 1's cascade-discounted
+    drift_fired became newly eligible for replay at the same ticks
+    (silently relabeling the same cascade artifact instead of removing
+    it -- see docs/notes-cascade-and-replay-investigation.md's "honest
+    nuance" on syncan_test_suppression.csv). With the fix, signal 1 must
+    not fire replay either.
+    """
+    calibration = _calibration(
+        n_signals=3, residual_thresholds=[1.0, 1.0, 1.0], staleness_thresholds=[3.0, 3.0, 3.0],
+        cusum_k=[0.5, 0.5, 0.5], cusum_thresholds=[5.0, 5.0, 5.0], cusum_mean=[0.0, 0.0, 0.0],
+    )
+    graph = CorrelationGraph(edges=[CorrelationEdge(signal_a=1, signal_b=2, strength=0.9, fold_agreement=5)], n_folds=5)
+    registry = FakeRegistry(n_signals=3)
+
+    # values change every tick so plateau never fires -- isolates this test to drift/replay.
+    values = np.column_stack([np.arange(5, dtype=float), np.arange(5, dtype=float), np.arange(5, dtype=float)])
+    residuals = np.column_stack([np.zeros(5), np.full(5, 3.0), np.full(5, 3.0)])  # signal 1 & 2 both spike (cascade fallout)
+    staleness = np.column_stack([np.full(5, 10.0), np.zeros(5), np.zeros(5)])  # signal 0 far past its own threshold
+
+    result = attribute(
+        residuals, values, staleness, calibration, graph, registry,
+        drift_min_persistence_ticks=1, plateau_min_persistence_ticks=1,
+    )
+    assert not result.drift_fired[:, 1].any()  # discounted, as before this fix
+    assert not result.replay_fired[:, 1].any()  # must NOT newly claim replay as a fallback label
+
+
+def test_attribute_cascade_discount_does_not_suppress_genuine_replay():
+    """Guard-rail: a genuine replay attack (two correlated signals both
+    spike together, no suppression/plateau firing anywhere) must still
+    fire replay correctly -- confirms the cascade-discount fix doesn't
+    over-suppress real replay detection just because no other signal has
+    independent evidence to discount in the first place.
+    """
+    # residual_thresholds/cusum_thresholds set high enough that a single-tick
+    # spike clears replay's own threshold but never accumulates enough CUSUM
+    # to also cross drift's -- isolates this test to replay, since detect_replay
+    # excludes any signal drift is independently (correctly) also firing on.
+    calibration = _calibration(
+        n_signals=2, residual_thresholds=[1.0, 1.0], staleness_thresholds=[1000.0, 1000.0],
+        cusum_k=[0.5, 0.5], cusum_thresholds=[100.0, 100.0], cusum_mean=[0.0, 0.0],
+    )
+    graph = CorrelationGraph(edges=[CorrelationEdge(signal_a=0, signal_b=1, strength=0.9, fold_agreement=5)], n_folds=5)
+    registry = FakeRegistry(n_signals=2)
+
+    values = np.column_stack([np.arange(3, dtype=float), np.arange(3, dtype=float)])
+    residuals = np.column_stack([np.full(3, 2.0), np.full(3, 2.0)])  # both signals spike together
+    staleness = np.zeros((3, 2))  # neither ever suppressed -- no cascade evidence exists
+
+    result = attribute(
+        residuals, values, staleness, calibration, graph, registry,
+        drift_min_persistence_ticks=1, plateau_min_persistence_ticks=1,
+    )
+    assert not result.drift_fired.any()  # confirm the fixture stays isolated to replay
+    assert result.replay_fired.all()

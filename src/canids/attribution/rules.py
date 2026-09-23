@@ -338,6 +338,7 @@ def detect_replay(
     confidence_weight: np.ndarray | None = None,
     min_signal_weight: float = REPLAY_MIN_SIGNAL_WEIGHT,
     min_partner_strength: float = REPLAY_MIN_PARTNER_STRENGTH,
+    cascade_discounted: np.ndarray | None = None,
 ) -> np.ndarray:
     """A residual spike on a signal AND a correlated spike on at least one of
     its correlation-graph partners (Step 6) at the same tick, with no
@@ -364,6 +365,21 @@ def detect_replay(
     contribution to corroboration is weighted by ITS confidence_weight and
     summed, so multiple weak partners (or one at/above min_partner_strength
     on its own) can still corroborate.
+
+    `cascade_discounted`, if given, is a (n_ticks, n_signals) bool array --
+    the same `strength >= cascade_discount_strength_threshold` condition
+    attribute() uses to discount cross-signal cascade `drift` firings (see
+    cascade_strength, docs/notes-cascade-and-replay-investigation.md).
+    Without this, a signal whose `drift` firing gets cascade-discounted
+    away becomes newly eligible for `replay` at the same tick via the
+    `~drift_fired` exclusion below, even though the underlying cause is
+    still cascade corruption, not a genuine replay -- silently absorbing
+    the tick coverage the cascade-discount fix was meant to remove (see
+    docs/notes-cascade-and-replay-investigation.md's "honest nuance" on
+    syncan_test_suppression.csv). Applied only to TARGET eligibility, not
+    partner corroboration: a cascade-corrupted signal's residual spike is
+    still real, so it should still be able to corroborate a genuinely
+    replay-attacked neighbor.
     """
     residual_exceeds = np.abs(residuals) > calibration.residual_thresholds
     n_ticks, n_signals = residuals.shape
@@ -375,6 +391,8 @@ def detect_replay(
         own_eligible = np.ones(n_signals, dtype=bool)
         weighted_exceeds = residual_exceeds.astype(float)
     target_exceeds = residual_exceeds & own_eligible
+    if cascade_discounted is not None:
+        target_exceeds = target_exceeds & ~cascade_discounted
 
     fired = np.zeros((n_ticks, n_signals), dtype=bool)
     for j in range(n_signals):
@@ -479,7 +497,11 @@ def attribute(
     suppression/plateau evidence at least this many multiples past ITS OWN
     threshold at the same tick -- the fix for cross-signal cascade
     misattribution from the shared GRU hidden state (see
-    docs/notes-cascade-and-replay-investigation.md).
+    docs/notes-cascade-and-replay-investigation.md). The same discount also
+    gates a signal's eligibility as a `replay` TARGET (not as a
+    corroborating partner) -- otherwise a signal whose `drift` firing gets
+    cascade-discounted away becomes newly eligible for `replay` instead,
+    silently relabeling the same cascade artifact rather than removing it.
     """
     if residuals.shape != values.shape or residuals.shape != staleness.shape:
         raise ValueError("residuals, values, and staleness must all share shape (n_ticks, n_signals)")
@@ -500,7 +522,8 @@ def attribute(
         suppression_fired, plateau_fired, staleness, frozen_streak_length(values),
         calibration, plateau_min_frozen_streak_ticks,
     )
-    drift_fired = drift_fired & ~(strength >= cascade_discount_strength_threshold)
+    cascade_discounted = strength >= cascade_discount_strength_threshold
+    drift_fired = drift_fired & ~cascade_discounted
 
     effective_confidence_weight = confidence_weight
     if effective_confidence_weight is None and confidence_mask is not None:
@@ -509,6 +532,7 @@ def attribute(
     replay_fired = detect_replay(
         residuals, calibration, correlation, plateau_fired, drift_fired,
         confidence_weight=effective_confidence_weight,
+        cascade_discounted=cascade_discounted,
     )
 
     primary_label = _resolve_primary_label(suppression_fired, plateau_fired, drift_fired, replay_fired)
