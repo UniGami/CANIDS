@@ -165,6 +165,7 @@ def main() -> None:
     val_residuals = y_val - pred_val
     naive_val_residuals = naive.residuals_streaming(val_joint, registry, val_ticks)
     confidence_mask = naive.confidence_gate(val_residuals, naive_val_residuals)
+    confidence_weight = naive.confidence_weight(val_residuals, naive_val_residuals)
 
     _print_header("Per-signal confidence gate (GRU vs. naive persistence on validation data)")
     for entry in registry.entries:
@@ -216,6 +217,7 @@ def main() -> None:
     result = attribute(
         residuals_test, values_at_ticks, staleness_at_ticks, calibration, correlation, registry,
         confidence_mask=confidence_mask,
+        confidence_weight=confidence_weight,
     )
     detector_flag = np.array([any(label is not None for label in row) for row in result.primary_label])
     gt_full, gt_source = resolve_ground_truth(test_csv, test_df, test_alignment.times, grid_step)

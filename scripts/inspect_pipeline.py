@@ -329,6 +329,7 @@ def stage_train_predict(
     val_residuals = y_val - pred_val
     naive_val_residuals = naive.residuals_streaming(val_joint, registry, val_ticks)
     confidence_mask = naive.confidence_gate(val_residuals, naive_val_residuals)
+    confidence_weight = naive.confidence_weight(val_residuals, naive_val_residuals)
     val_staleness = compute_staleness(val_alignment)
     calibration = calibrate(val_residuals, val_alignment.values, val_staleness, val_alignment.updated, registry, percentile=percentile)
 
@@ -360,6 +361,7 @@ def stage_train_predict(
     result = attribute(
         residuals_test, values_at_ticks, staleness_at_ticks, calibration, correlation, registry,
         confidence_mask=confidence_mask,
+        confidence_weight=confidence_weight,
     )
     detector_flag = np.array([any(label is not None for label in row) for row in result.primary_label])
     print(f"detector-flagged ticks (any signal's primary_label set): {int(detector_flag.sum())} / {len(tick_indices)}")

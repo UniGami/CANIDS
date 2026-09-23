@@ -25,9 +25,14 @@ import numpy as np
 
 from canids.calibration import CalibrationResult, adaptive_cusum_statistic
 from canids.config import (
+    CASCADE_DISCOUNT_STRENGTH_THRESHOLD,
+    CONFIDENCE_WEIGHT_FLOOR,
     CUSUM_ADAPTIVE_DECAY,
     DRIFT_MIN_PERSISTENCE_TICKS,
+    PLATEAU_MIN_FROZEN_STREAK_TICKS,
     PLATEAU_MIN_PERSISTENCE_TICKS,
+    REPLAY_MIN_PARTNER_STRENGTH,
+    REPLAY_MIN_SIGNAL_WEIGHT,
     VALUE_RANGE_GATE_MAX_WIDTH,
 )
 from canids.correlation import CorrelationGraph
@@ -96,6 +101,34 @@ def in_normal_value_range(
     return in_range & applies
 
 
+def frozen_streak_length(values: np.ndarray) -> np.ndarray:
+    """Per-signal, per-tick run-length (int) of consecutive bit-identical
+    values ending at (and including) each tick. streak[0] is always 1 --
+    there is no prior tick to compare against.
+
+    Generalizes detect_plateau's old single-tick `values[t] == values[t-1]`
+    equality check into a real streak length, computed entirely from the
+    grid-aligned `values` array attribute() already receives -- no new raw
+    per-transmission data needs to be plumbed through, since a genuinely
+    frozen underlying signal already produces a long run on the
+    forward-filled grid too (see docs/notes-cascade-and-replay-investigation.md,
+    which found real plateau attack targets via streaks of 251-554
+    consecutive identical RAW transmissions; the grid-aligned version of the
+    same signal is at least as long, since forward-fill only extends a run).
+
+    Vectorized (no per-signal Python loop) since real files run ~450k ticks
+    x 20 signals -- a "last index where the value changed" trick: the
+    streak length at any tick is just that tick's index minus the most
+    recent change-index, plus one.
+    """
+    n_ticks, n_signals = values.shape
+    changed = np.ones((n_ticks, n_signals), dtype=bool)
+    changed[1:] = values[1:] != values[:-1]
+    tick_idx = np.arange(n_ticks)[:, None]
+    last_change_idx = np.maximum.accumulate(np.where(changed, tick_idx, 0), axis=0)
+    return tick_idx - last_change_idx + 1
+
+
 @dataclass
 class AttributionResult:
     suppression_fired: np.ndarray  # (n_ticks, n_signals) bool, each rule's INDEPENDENT firing decision
@@ -129,11 +162,32 @@ def detect_plateau(
     confidence_mask: np.ndarray | None = None,
     min_persistence_ticks: int = 1,
     value_range_gate: bool = False,
+    min_frozen_streak_ticks: int = 2,
 ) -> np.ndarray:
-    """Actual value frozen tick-over-tick while the residual grows: the model
-    keeps expecting the (normally-moving) signal to change, so its forecast
-    increasingly diverges from the frozen actual value. Tick 0 can never fire
-    -- there is no prior tick within `values` to compare against.
+    """Actual value frozen over a run of ticks while the residual grows: the
+    model keeps expecting the (normally-moving) signal to change, so its
+    forecast increasingly diverges from the frozen actual value. Tick 0 can
+    never fire -- there is no prior tick within `values` to compare against.
+
+    `min_frozen_streak_ticks` (default 2, generalizing the original
+    single-tick `values[t] == values[t-1]` equality check into a real
+    run-length via frozen_streak_length) is how long a run of bit-identical
+    values must be before it counts as "flat" at all. Once flat, the
+    residual check is STREAK-SCOPED, not single-tick: it fires if the
+    residual exceeded threshold at ANY point since the current frozen run
+    began, not only at the current tick. This matters because a genuinely
+    frozen signal's residual can legitimately dip back under threshold for
+    a tick or two mid-run (model noise) without the underlying attack
+    having stopped -- see
+    docs/notes-cascade-and-replay-investigation.md, which found real
+    plateau attack targets via raw-transmission streaks of 251-554
+    consecutive identical values where the model's residual did not stay
+    above threshold at literally every single tick throughout. A short,
+    coincidental 2-3 tick repeat (normal, common at real SynCAN's
+    transmission rate against config.GRID_STEP_SECONDS' grid) is not
+    mistaken for this: it can only "borrow" evidence from within its own
+    short streak, which caps how much a fleeting repeat can benefit from a
+    residual spike that happens to sit right at its start.
 
     `min_persistence_ticks` (default 1, a no-op) applies require_persistence
     as a final hysteresis/debounce pass -- see its docstring and
@@ -142,10 +196,17 @@ def detect_plateau(
     comfortably in its own normal range -- see in_normal_value_range's
     docstring and config.VALUE_RANGE_GATE_MAX_WIDTH.
     """
-    is_flat = np.zeros_like(residuals, dtype=bool)
-    is_flat[1:] = values[1:] == values[:-1]
+    n_ticks, n_signals = residuals.shape
+    streak = frozen_streak_length(values)
+    is_flat = streak >= min_frozen_streak_ticks
+
+    tick_idx = np.arange(n_ticks)[:, None]
+    streak_start_idx = tick_idx - streak + 1
     residual_exceeds = np.abs(residuals) > calibration.residual_thresholds
-    fired = is_flat & residual_exceeds
+    last_exceeds_idx = np.maximum.accumulate(np.where(residual_exceeds, tick_idx, -1), axis=0)
+    residual_exceeded_in_streak = last_exceeds_idx >= streak_start_idx
+
+    fired = is_flat & residual_exceeded_in_streak
     if confidence_mask is not None:
         fired = fired & confidence_mask
     if value_range_gate:
@@ -214,13 +275,69 @@ def detect_drift(
     return require_persistence(fired, min_persistence_ticks)
 
 
+def cascade_strength(
+    suppression_fired: np.ndarray,
+    plateau_fired: np.ndarray,
+    staleness: np.ndarray,
+    frozen_streak: np.ndarray,
+    calibration: CalibrationResult,
+    plateau_min_frozen_streak_ticks: int = PLATEAU_MIN_FROZEN_STREAK_TICKS,
+) -> np.ndarray:
+    """Per-signal, per-tick: the strongest "how far past ITS OWN threshold"
+    ratio among all OTHER signals independently firing suppression or
+    plateau at that same tick. Used by attribute() to discount a signal's
+    own `drift` firing when some other signal already has strong,
+    independent evidence of an attack at the same moment -- the fix for
+    cross-signal cascade misattribution (see
+    docs/notes-cascade-and-replay-investigation.md): because Branch 1's
+    GRU is one shared hidden state over all signals, a genuine attack on
+    one signal (e.g. suppression freezing it entirely) degrades forecast
+    quality for OTHER, unrelated signals too, and their independently
+    computed `drift` CUSUM statistic can cross ITS OWN threshold purely as
+    fallout -- with nothing previously recognizing that another signal
+    already explains the anomaly.
+
+    Deliberately built from `suppression` and `plateau` ONLY, never
+    `drift`: a signal already falsely drift-firing (the very thing being
+    cascaded) must not be allowed to discount ANOTHER signal's drift --
+    that would risk suppressing a genuine, simultaneous, multi-signal
+    drift attack (confirmed real case: `notes-cascade-and-replay-investigation.md`'s
+    drift file, where three functionally-correlated signals drift in
+    lockstep as the actual attack). Suppression and plateau are safer,
+    higher-confidence triggers: suppression uses no model at all, and
+    plateau's frozen-value half depends on raw `values`, not on the
+    cascade-corrupted forecast -- both are structurally closer to immune
+    to the same corruption mechanism they're being used to flag.
+
+    Only used to discount `drift`, never `plateau` -- plateau's condition
+    is likewise a property of raw `values`, not forecast quality, so it
+    doesn't need (or get) this protection.
+    """
+    n_ticks, n_signals = suppression_fired.shape
+    staleness_ratio = staleness / np.maximum(calibration.staleness_thresholds, 1e-9)
+    plateau_ratio = frozen_streak / max(plateau_min_frozen_streak_ticks, 1)
+    strong_evidence = np.maximum(
+        np.where(suppression_fired, staleness_ratio, 0.0),
+        np.where(plateau_fired, plateau_ratio, 0.0),
+    )
+
+    strength = np.zeros((n_ticks, n_signals))
+    for j in range(n_signals):
+        others = np.delete(strong_evidence, j, axis=1)
+        if others.shape[1]:
+            strength[:, j] = others.max(axis=1)
+    return strength
+
+
 def detect_replay(
     residuals: np.ndarray,
     calibration: CalibrationResult,
     correlation: CorrelationGraph,
     plateau_fired: np.ndarray,
     drift_fired: np.ndarray,
-    confidence_mask: np.ndarray | None = None,
+    confidence_weight: np.ndarray | None = None,
+    min_signal_weight: float = REPLAY_MIN_SIGNAL_WEIGHT,
+    min_partner_strength: float = REPLAY_MIN_PARTNER_STRENGTH,
 ) -> np.ndarray:
     """A residual spike on a signal AND a correlated spike on at least one of
     its correlation-graph partners (Step 6) at the same tick, with no
@@ -230,22 +347,42 @@ def detect_replay(
     the hardest signature to pin down and is defined partly by NOT matching
     the earlier, cleaner signatures.
 
-    `confidence_mask`, if given, gates residual_exceeds itself, so a
-    low-confidence signal can supply neither a target spike nor corroborating
-    partner evidence.
+    `confidence_weight`, if given, is a per-signal (n_signals,) float
+    (see models/naive.confidence_weight), NOT the boolean `confidence_mask`
+    used by detect_plateau/detect_drift. This is a deliberate, separate,
+    more lenient criterion for replay specifically: applying the same hard
+    gate used for plateau/drift made replay structurally impossible to
+    ever fire (see docs/notes-cascade-and-replay-investigation.md -- proven
+    on real data, only 4/20 signals ever passed the hard gate, 3 of those
+    had zero correlation-graph partners, and the 4th's only partner was
+    itself gated out, so replay fired 0 times on every real test file
+    including its own). Replay's own two-signal corroboration requirement
+    is already a strong, validated filter on its own (95.9% precision when
+    the hard gate was removed entirely), so a LOW CONF signal's evidence is
+    discounted here, not discarded: `min_signal_weight` gates whether a
+    signal's own residual is eligible as target evidence, and a partner's
+    contribution to corroboration is weighted by ITS confidence_weight and
+    summed, so multiple weak partners (or one at/above min_partner_strength
+    on its own) can still corroborate.
     """
     residual_exceeds = np.abs(residuals) > calibration.residual_thresholds
-    if confidence_mask is not None:
-        residual_exceeds = residual_exceeds & confidence_mask
-
     n_ticks, n_signals = residuals.shape
+
+    if confidence_weight is not None:
+        own_eligible = confidence_weight >= min_signal_weight
+        weighted_exceeds = residual_exceeds * confidence_weight
+    else:
+        own_eligible = np.ones(n_signals, dtype=bool)
+        weighted_exceeds = residual_exceeds.astype(float)
+    target_exceeds = residual_exceeds & own_eligible
+
     fired = np.zeros((n_ticks, n_signals), dtype=bool)
     for j in range(n_signals):
         partners = correlation.partner_indices(j)
         if not partners:
             continue
-        partner_exceeds = residual_exceeds[:, partners].any(axis=1)
-        fired[:, j] = residual_exceeds[:, j] & partner_exceeds
+        partner_strength = weighted_exceeds[:, partners].sum(axis=1)
+        fired[:, j] = target_exceeds[:, j] & (partner_strength >= min_partner_strength)
 
     return fired & ~plateau_fired & ~drift_fired
 
@@ -280,6 +417,9 @@ def attribute(
     plateau_min_persistence_ticks: int = PLATEAU_MIN_PERSISTENCE_TICKS,
     drift_cusum_decay: float = CUSUM_ADAPTIVE_DECAY,
     value_range_gate: bool = True,
+    plateau_min_frozen_streak_ticks: int = PLATEAU_MIN_FROZEN_STREAK_TICKS,
+    cascade_discount_strength_threshold: float = CASCADE_DISCOUNT_STRENGTH_THRESHOLD,
+    confidence_weight: np.ndarray | None = None,
 ) -> AttributionResult:
     """Run all four rules over one tick-aligned evaluation stream and resolve
     the priority-ordered primary label.
@@ -287,9 +427,23 @@ def attribute(
     `confidence_mask` (see models/naive.confidence_gate, PLAN.md Step 7), if
     given, is a per-signal (n_signals,) bool: False marks a signal whose
     forecasting residual isn't meaningfully better than naive persistence on
-    validation data, so its residual-dependent rules (plateau, drift, replay)
-    are suppressed for that signal. Suppression is unaffected -- it never
-    depends on the model.
+    validation data, so plateau/drift are suppressed for that signal.
+    Suppression is unaffected -- it never depends on the model. `replay`
+    does NOT use `confidence_mask` -- see `confidence_weight` below.
+
+    `confidence_weight` (see models/naive.confidence_weight), if given, is a
+    per-signal (n_signals,) float used ONLY by `replay`, deliberately
+    decoupled from `confidence_mask`'s hard gate (see
+    docs/notes-cascade-and-replay-investigation.md: applying the same hard
+    gate to replay made it structurally impossible to ever fire, since
+    replay's two-signal corroboration requirement is already a strong
+    filter on its own and doesn't need the same protection plateau/drift
+    do). If not given but `confidence_mask` is, a coarse fallback is
+    derived (1.0 where the mask is True, config.CONFIDENCE_WEIGHT_FLOOR
+    where False) so replay is never fully blocked just because a caller
+    only computed the boolean gate -- but callers should prefer computing
+    `confidence_weight` directly (models/naive.confidence_weight) to get
+    the real, graduated signal instead of this two-level approximation.
 
     `drift_min_persistence_ticks`/`plateau_min_persistence_ticks` (see
     require_persistence) gate the drift/plateau rules on sustained firing,
@@ -312,6 +466,20 @@ def attribute(
     own calibrated normal range -- a complementary, PARTIAL mitigation,
     self-limiting to signals whose range is narrow enough for that to be
     meaningful (config.VALUE_RANGE_GATE_MAX_WIDTH).
+
+    `plateau_min_frozen_streak_ticks` (see detect_plateau,
+    frozen_streak_length) is how long a run of bit-identical values must be
+    before `plateau` treats it as frozen, and also bounds how far back
+    `plateau`'s residual check looks within that run -- see
+    docs/notes-cascade-and-replay-investigation.md for why plateau's old
+    single-tick check under-fired on genuinely frozen signals.
+
+    `cascade_discount_strength_threshold` (see cascade_strength) discounts
+    a signal's `drift` firing when some OTHER signal has independent
+    suppression/plateau evidence at least this many multiples past ITS OWN
+    threshold at the same tick -- the fix for cross-signal cascade
+    misattribution from the shared GRU hidden state (see
+    docs/notes-cascade-and-replay-investigation.md).
     """
     if residuals.shape != values.shape or residuals.shape != staleness.shape:
         raise ValueError("residuals, values, and staleness must all share shape (n_ticks, n_signals)")
@@ -320,13 +488,28 @@ def attribute(
 
     suppression_fired = detect_suppression(staleness, calibration)
     plateau_fired = detect_plateau(
-        values, residuals, calibration, confidence_mask, plateau_min_persistence_ticks, value_range_gate
+        values, residuals, calibration, confidence_mask, plateau_min_persistence_ticks, value_range_gate,
+        plateau_min_frozen_streak_ticks,
     )
     drift_fired = detect_drift(
         residuals, calibration, confidence_mask, drift_min_persistence_ticks, drift_cusum_decay,
         values, value_range_gate,
     )
-    replay_fired = detect_replay(residuals, calibration, correlation, plateau_fired, drift_fired, confidence_mask)
+
+    strength = cascade_strength(
+        suppression_fired, plateau_fired, staleness, frozen_streak_length(values),
+        calibration, plateau_min_frozen_streak_ticks,
+    )
+    drift_fired = drift_fired & ~(strength > cascade_discount_strength_threshold)
+
+    effective_confidence_weight = confidence_weight
+    if effective_confidence_weight is None and confidence_mask is not None:
+        effective_confidence_weight = np.where(confidence_mask, 1.0, CONFIDENCE_WEIGHT_FLOOR)
+
+    replay_fired = detect_replay(
+        residuals, calibration, correlation, plateau_fired, drift_fired,
+        confidence_weight=effective_confidence_weight,
+    )
 
     primary_label = _resolve_primary_label(suppression_fired, plateau_fired, drift_fired, replay_fired)
 

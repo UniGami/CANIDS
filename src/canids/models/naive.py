@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from canids.config import CONFIDENCE_TOLERANCE
+from canids.config import CONFIDENCE_TOLERANCE, CONFIDENCE_WEIGHT_FLOOR
 from canids.registry import Registry
 
 
@@ -62,3 +62,33 @@ def confidence_gate(
     model_var = np.var(model_residuals, axis=0)
     naive_var = np.var(naive_residuals, axis=0)
     return model_var < tolerance * naive_var
+
+
+def confidence_weight(
+    model_residuals: np.ndarray,
+    naive_residuals: np.ndarray,
+    tolerance: float = CONFIDENCE_TOLERANCE,
+    floor: float = CONFIDENCE_WEIGHT_FLOOR,
+) -> np.ndarray:
+    """Graduated version of confidence_gate: per-signal (n_signals,) float in
+    [floor, 1.0] instead of a hard True/False cliff. Equals 1.0 exactly where
+    confidence_gate would be True (model beats naive persistence by at least
+    `tolerance`), and never drops below `floor` no matter how much worse the
+    model gets beyond that -- a signal is discounted, never fully zeroed out.
+
+    Built for attribution.rules.detect_replay (see
+    docs/notes-cascade-and-replay-investigation.md): confidence_gate's hard
+    gate, applied uniformly to plateau/drift/replay, made replay
+    structurally impossible to ever fire (proven: only a handful of signals
+    ever pass it, and the correlation graph's edges rarely connect two of
+    them to each other). Replay's own two-signal corroboration requirement
+    is already a strong filter on its own, so a LOW CONF signal's evidence
+    should be discounted for replay, not discarded entirely the way it
+    correctly still is for plateau/drift via confidence_gate. Reusable for
+    GRU residuals now and TCN residuals once it replaces GRU (Step 10), same
+    as confidence_gate.
+    """
+    model_var = np.var(model_residuals, axis=0)
+    naive_var = np.var(naive_residuals, axis=0)
+    ratio = tolerance * naive_var / np.maximum(model_var, np.finfo(float).eps)
+    return np.clip(ratio, floor, 1.0)

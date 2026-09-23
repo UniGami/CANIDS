@@ -35,3 +35,14 @@ already-built pieces.
   precision/recall/F1 (and why accuracy is deliberately not the headline
   metric), and a worked example of what actually flows from the GRU's
   output through the attribution layer to a final detector verdict.
+- [notes-cascade-and-replay-investigation.md](notes-cascade-and-replay-investigation.md) —
+  follow-up investigation explaining *why* the false-positive volume above
+  is so high and, critically, why `replay` almost never fires: a shared
+  GRU hidden state lets a real attack on one signal falsely implicate
+  unrelated signals (cascade misattribution), a rule-priority bug that
+  mislabels real plateau attacks as drift, and — the headline result — the
+  confidence gate made `replay` structurally impossible to trigger. All
+  three are now fixed in `attribution/rules.py`/`models/naive.py`, verified
+  against real data (`replay` recall 12.8%→72.6%, `plateau` recall
+  65.0%→92.4%), with an honest note on a second-order cascade effect the
+  fix surfaced but didn't fully resolve on the suppression test file.

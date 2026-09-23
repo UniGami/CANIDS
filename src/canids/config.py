@@ -147,4 +147,82 @@ LEARNING_RATE = 1e-3
 # residual variance on the same signal to count as "meaningfully better."
 CONFIDENCE_TOLERANCE = 0.9
 
+# Floor for models.naive.confidence_weight's graduated version of
+# confidence_gate's hard 0/1 cliff, and reused by attribution.rules.attribute()
+# as the fallback weight for a LOW CONF signal (confidence_mask False) when no
+# explicit continuous confidence_weight is supplied. Confirmed empirically
+# bracketed by two endpoints (see
+# docs/notes-cascade-and-replay-investigation.md): 0.0 (today's hard gate --
+# the replay attribution rule structurally, provably fires 0 times on every
+# real test file, since only 4/20 signals ever pass confidence_gate and 3 of
+# those 4 have zero correlation-graph partners) and ~1.0-equivalent (removing
+# the gate entirely -- replay fired 118,938 times, 95.9% landing inside real
+# attack windows, across 12/13 correlation-graph edges). 0.35 is a
+# conservative starting point meaningfully above 0 without assuming the
+# full-removal result generalizes past the one file/model it was measured on
+# -- needs its own real-data ablation sweep (e.g. 0.0/0.2/0.35/0.5/1.0)
+# before being trusted as final, same caveat as every other
+# empirically-derived constant in this file.
+CONFIDENCE_WEIGHT_FLOOR = 0.35
+
+# Minimum length of a run of bit-identical values
+# (attribution/rules.py's frozen_streak_length) before detect_plateau's
+# is_flat condition counts as true, replacing the old single-tick
+# values[t]==values[t-1] equality check. Real confirmed plateau attack
+# targets showed frozen streaks of 251-554 consecutive identical real
+# transmissions during the labeled attack window (see
+# docs/notes-cascade-and-replay-investigation.md); normal grid-aligned
+# forward-fill gaps between genuine transmissions are far shorter --
+# SynCAN IDs transmit at roughly 20-70Hz against this file's 100Hz grid
+# (GRID_STEP_SECONDS=0.01), so an average gap of only ~1.5-5 ticks between
+# real messages even with no attack at all. 8 sits comfortably above that
+# normal noise floor and far below real attack streak lengths, but has NOT
+# yet been validated against the actual normal-data repeat-length
+# distribution -- re-verify before trusting further.
+PLATEAU_MIN_FROZEN_STREAK_TICKS = 8
+
+# How many multiples past ITS OWN threshold another signal's INDEPENDENT
+# suppression/plateau evidence must be, at the same tick, before it counts
+# as strong enough cascade context to discount THIS signal's drift firing
+# (attribution/rules.py's cascade_strength) -- the fix for cross-signal
+# cascade misattribution, where one shared GRU hidden state lets a real
+# attack on one signal corrupt forecasts for unrelated signals too (see
+# docs/notes-cascade-and-replay-investigation.md). The confirmed real case
+# (a suppression attack on id8) sat far past -- not borderline -- its own
+# staleness threshold for effectively the entire labeled attack window (a
+# total transmission cutoff, not a partial one), so a 2x margin comfortably
+# captures that kind of unambiguous trigger while still requiring real,
+# sustained evidence rather than firing on two signals just barely crossing
+# their own thresholds at the same moment, which could be a genuine
+# coincidental simultaneous attack rather than fallout. Starting value only
+# -- validate against data/raw/syncan_test_suppression.csv and
+# syncan_test_drift.csv before trusting further.
+CASCADE_DISCOUNT_STRENGTH_THRESHOLD = 2.0
+
+# --- Replay attribution: decoupled from the shared confidence gate above ---
+# detect_replay's own, more lenient inclusion criteria (see
+# docs/notes-cascade-and-replay-investigation.md) -- deliberately separate
+# from CONFIDENCE_TOLERANCE, which was tuned for drift/plateau's very
+# different noise profile and, applied to replay too, made it structurally
+# impossible to ever fire (proven: only 4/20 signals pass CONFIDENCE_TOLERANCE,
+# 3 of those have zero correlation partners, and the 4th's only partner is
+# itself gated out). Replay's own two-signal corroboration requirement is
+# already a strong, validated filter (95.9% precision when unblocked), so it
+# doesn't need the same gate stacked on top.
+#
+# REPLAY_MIN_SIGNAL_WEIGHT: minimum continuous confidence_weight a signal
+# needs to supply its OWN residual as replay target evidence. Set equal to
+# CONFIDENCE_WEIGHT_FLOOR so a LOW CONF signal sitting at exactly the floor
+# is still eligible to be a replay target, not just a corroborating partner.
+REPLAY_MIN_SIGNAL_WEIGHT = CONFIDENCE_WEIGHT_FLOOR
+# REPLAY_MIN_PARTNER_STRENGTH: minimum SUM of (partner residual-exceeds) *
+# (partner confidence_weight) across a signal's correlation-graph partners
+# before that counts as corroboration. Set below CONFIDENCE_WEIGHT_FLOOR so
+# a single LOW CONF partner alone (weight == the floor) is still sufficient
+# on its own to corroborate -- preserving the old "any one partner spiking
+# is enough" semantics from the pre-fix boolean version, just now reachable
+# by LOW CONF partners instead of only the 4 confidence_gate-passing
+# signals. Needs the same real-data ablation as CONFIDENCE_WEIGHT_FLOOR.
+REPLAY_MIN_PARTNER_STRENGTH = 0.25
+
 RANDOM_SEED = 42

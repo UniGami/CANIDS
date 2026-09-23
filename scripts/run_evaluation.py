@@ -165,6 +165,7 @@ def main() -> None:
     val_residuals = y_val - pred_val
     naive_val_residuals = naive.residuals_streaming(val_joint, registry, val_ticks)
     confidence_mask = naive.confidence_gate(val_residuals, naive_val_residuals)
+    confidence_weight = naive.confidence_weight(val_residuals, naive_val_residuals)
 
     if not args.skip_residual_report:
         _print_header("Pre-attribution forecast residuals (validation)")
@@ -213,6 +214,7 @@ def main() -> None:
 
     result = evaluate_all(
         model, registry, calibration, correlation, attack_csvs, confidence_mask=confidence_mask,
+        confidence_weight=confidence_weight,
         sequence_length=args.sequence_length, batch_size=args.batch_size, grid_step=args.grid_step,
         val_residuals=val_residuals if args.sweep else None,
         val_values=val_alignment.values if args.sweep else None,

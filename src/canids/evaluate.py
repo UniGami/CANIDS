@@ -220,8 +220,8 @@ def evaluate_attack_csv(
     plateau_min_persistence_ticks: int = PLATEAU_MIN_PERSISTENCE_TICKS,
     drift_cusum_decay: float = CUSUM_ADAPTIVE_DECAY,
     value_range_gate: bool = True,
-    return_residuals: bool = False,
-) -> tuple[AttributionResult, np.ndarray, np.ndarray] | tuple[AttributionResult, np.ndarray, np.ndarray, np.ndarray]:
+    confidence_weight: np.ndarray | None = None,
+) -> tuple[AttributionResult, np.ndarray, np.ndarray]:
     """Run the full detect + attribute pipeline against one attack CSV,
     reusing predict_streaming (never materializes a full window array, see
     docs/notes-real-data-scaling.md) and attribution.attribute. Returns
@@ -233,15 +233,12 @@ def evaluate_attack_csv(
     `drift_min_persistence_ticks`/`plateau_min_persistence_ticks`,
     `drift_cusum_decay`, and `value_range_gate` all pass through to
     attribute()'s real-data false-positive mitigations -- see
-    docs/notes-false-positive-investigation.md.
-
-    `return_residuals=True` additionally returns the raw GRU forecast
-    residuals (y - pred, shape (n_evaluated_ticks, n_signals)) computed
-    before attribute() runs -- lets a caller inspect pre-attribution
-    forecast quality on this CSV directly, to separate "is the forecaster
-    good" from "is the attribution layer's rule firing behavior good" (see
-    docs/notes-false-positive-investigation.md's root-cause analysis).
-    Off by default so every existing caller's return shape is unchanged.
+    docs/notes-false-positive-investigation.md. `confidence_weight` (see
+    models/naive.confidence_weight) passes through to attribute()'s
+    replay-specific, more lenient confidence criterion -- see
+    docs/notes-cascade-and-replay-investigation.md; unlike the other
+    knobs here, it is NOT derived from `confidence_mask` if omitted --
+    that's attribute()'s own fallback, not this function's.
     """
     test_df = load_attack(attack_csv_path)
     test_alignment = align_to_grid(test_df, registry, step=grid_step)
@@ -264,6 +261,7 @@ def evaluate_attack_csv(
         plateau_min_persistence_ticks=plateau_min_persistence_ticks,
         drift_cusum_decay=drift_cusum_decay,
         value_range_gate=value_range_gate,
+        confidence_weight=confidence_weight,
     )
 
     gt_full, _source = resolve_ground_truth(attack_csv_path, test_df, test_alignment.times, grid_step)
@@ -293,6 +291,7 @@ def sensitivity_report(
     plateau_min_persistence_ticks: int = PLATEAU_MIN_PERSISTENCE_TICKS,
     drift_cusum_decay: float = CUSUM_ADAPTIVE_DECAY,
     value_range_gate: bool = True,
+    confidence_weight: np.ndarray | None = None,
 ) -> dict[float, DetectionMetrics]:
     """Detection metrics at every percentile calibration.sensitivity_sweep
     produces -- this is where sensitivity_sweep (built in Step 8, unit
@@ -300,7 +299,8 @@ def sensitivity_report(
     used, per PLAN.md's threshold-sensitivity mitigation. Re-runs
     evaluate_attack_csv once per percentile (real, repeated work -- callers
     should expect this to take multiple times as long as one detection
-    pass).
+    pass). `confidence_weight` passes through to attribute()'s
+    replay-specific criterion -- see evaluate_attack_csv's docstring.
     """
     sweep = sensitivity_sweep(val_residuals, val_values, val_staleness, val_updated, registry, percentiles=percentiles)
     report: dict[float, DetectionMetrics] = {}
@@ -310,6 +310,7 @@ def sensitivity_report(
             sequence_length, batch_size, grid_step, confidence_mask,
             drift_min_persistence_ticks, plateau_min_persistence_ticks,
             drift_cusum_decay, value_range_gate,
+            confidence_weight=confidence_weight,
         )
         detector_flag = detector_flags_from_attribution(result)
         report[percentile] = detection_metrics(detector_flag, ground_truth, attack_type, percentile)
@@ -342,6 +343,7 @@ def evaluate_all(
     plateau_min_persistence_ticks: int = PLATEAU_MIN_PERSISTENCE_TICKS,
     drift_cusum_decay: float = CUSUM_ADAPTIVE_DECAY,
     value_range_gate: bool = True,
+    confidence_weight: np.ndarray | None = None,
 ) -> EvaluationResult:
     """Orchestrator: runs evaluate_attack_csv + detection_metrics +
     rule_collision_matrix across every entry in attack_csvs (e.g.
@@ -349,7 +351,9 @@ def evaluate_all(
     combined confusion matrix. If val_residuals/val_values/val_staleness/
     val_updated are given, also runs sensitivity_report per attack type --
     omitted by default since it re-runs detection once per percentile, real
-    extra work the caller should opt into.
+    extra work the caller should opt into. `confidence_weight` passes
+    through to attribute()'s replay-specific criterion -- see
+    evaluate_attack_csv's docstring.
     """
     per_attack_metrics: list[DetectionMetrics] = []
     rule_confusion: dict[tuple[str, str], int] = {}
@@ -361,6 +365,7 @@ def evaluate_all(
             sequence_length, batch_size, grid_step, confidence_mask,
             drift_min_persistence_ticks, plateau_min_persistence_ticks,
             drift_cusum_decay, value_range_gate,
+            confidence_weight=confidence_weight,
         )
         detector_flag = detector_flags_from_attribution(result)
         per_attack_metrics.append(detection_metrics(detector_flag, ground_truth, attack_type, calibration.percentile))
@@ -375,6 +380,7 @@ def evaluate_all(
                 confidence_mask, sweep_percentiles, sequence_length, batch_size, grid_step,
                 drift_min_persistence_ticks, plateau_min_persistence_ticks,
                 drift_cusum_decay, value_range_gate,
+                confidence_weight=confidence_weight,
             )
 
     return EvaluationResult(per_attack_metrics=per_attack_metrics, rule_confusion=rule_confusion, sensitivity=sensitivity)

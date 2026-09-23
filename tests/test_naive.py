@@ -2,7 +2,7 @@ import numpy as np
 
 from canids.data.grid import align_to_grid
 from canids.data.windowing import build_joint_vector, make_forecast_windows, valid_forecast_ticks
-from canids.models.naive import confidence_gate, predict, residuals, residuals_streaming
+from canids.models.naive import confidence_gate, confidence_weight, predict, residuals, residuals_streaming
 
 
 def test_naive_predict_is_last_tick_values(two_signal_case):
@@ -53,6 +53,25 @@ def test_confidence_gate_is_per_signal():
     model_res = np.stack([rng.normal(0, 1.0, 500), rng.normal(0, 20.0, 500)], axis=1)
     gate = confidence_gate(model_res, naive_res, tolerance=0.9)
     np.testing.assert_array_equal(gate, [True, False])
+
+
+def test_confidence_weight_matches_gate_at_boundary_and_stays_above_floor():
+    rng = np.random.default_rng(0)
+    naive_res = np.stack([rng.normal(0, 10.0, 500), rng.normal(0, 10.0, 500)], axis=1)
+    model_res = np.stack([rng.normal(0, 1.0, 500), rng.normal(0, 20.0, 500)], axis=1)
+    gate = confidence_gate(model_res, naive_res, tolerance=0.9)
+    weight = confidence_weight(model_res, naive_res, tolerance=0.9, floor=0.35)
+    np.testing.assert_array_equal(gate, [True, False])
+    assert weight[0] == 1.0  # gate True (model_var < tolerance*naive_var) -> ratio > 1.0 -> clipped to exactly 1.0
+    assert 0.35 <= weight[1] < 1.0  # gate False -> discounted, but never below the floor
+
+
+def test_confidence_weight_never_drops_below_floor_regardless_of_variance():
+    rng = np.random.default_rng(1)
+    naive_res = rng.normal(0, 1.0, size=(200, 1))
+    model_res = rng.normal(0, 1000.0, size=(200, 1))  # catastrophically bad model
+    weight = confidence_weight(model_res, naive_res, tolerance=0.9, floor=0.35)
+    assert weight[0] == 0.35
 
 
 def test_residuals_streaming_matches_windowed_residuals(two_signal_case):

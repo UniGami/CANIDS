@@ -4,10 +4,12 @@ import pytest
 from canids.attribution.rules import (
     RULE_PRIORITY,
     attribute,
+    cascade_strength,
     detect_drift,
     detect_plateau,
     detect_replay,
     detect_suppression,
+    frozen_streak_length,
     in_normal_value_range,
     require_persistence,
 )
@@ -58,13 +60,18 @@ def test_detect_suppression_uses_staleness_threshold():
 def test_detect_plateau_requires_both_flat_value_and_residual_exceeds():
     calibration = _calibration(n_signals=1, residual_thresholds=[1.0])
     # tick0: no prior tick -> never fires regardless of residual.
-    # tick1: flat vs tick0, residual small -> no fire.
-    # tick2: flat vs tick1, residual large -> fires.
-    # tick3: value changes, residual large -> no fire (not flat).
+    # tick1: flat vs tick0 (streak=2, clears the default min_frozen_streak_ticks=2),
+    #        residual small at THIS tick -- but the streak-scoped check looks
+    #        back across the whole current streak (ticks 0-1), and tick0's
+    #        residual DID exceed threshold, so this now correctly fires: a
+    #        momentary residual dip mid-streak doesn't mean the plateau
+    #        stopped (see docs/notes-cascade-and-replay-investigation.md).
+    # tick2: flat vs tick1 (streak=3), residual large at this tick -> fires.
+    # tick3: value changes (streak resets to 1), residual large -> no fire (not flat).
     values = np.array([[5.0], [5.0], [5.0], [9.0]])
     residuals = np.array([[2.0], [0.1], [2.0], [2.0]])
     fired = detect_plateau(values, residuals, calibration)
-    np.testing.assert_array_equal(fired[:, 0], [False, False, True, False])
+    np.testing.assert_array_equal(fired[:, 0], [False, True, True, False])
 
 
 def test_detect_drift_matches_cusum_recursion_with_zero_mean():
@@ -283,8 +290,15 @@ def test_confidence_mask_suppresses_residual_rules_but_not_suppression():
     result = attribute(residuals, values, staleness, calibration, graph, registry, confidence_mask=confidence_mask)
 
     assert result.suppression_fired[0].tolist() == [True, True]  # unaffected by confidence gating
-    assert result.replay_fired[0, 0] == False  # signal 0's residual can't count as target or partner evidence
-    assert result.replay_fired[0, 1] == False  # signal 1's only partner (0) is gated out, so no corroboration
+    # replay is NOT gated by confidence_mask (see docs/notes-cascade-and-replay-investigation.md
+    # -- applying the same hard gate used by plateau/drift made replay structurally
+    # impossible to ever fire). attribute() derives a fallback confidence_weight from
+    # confidence_mask when none is given explicitly (1.0 for True, CONFIDENCE_WEIGHT_FLOOR
+    # for False), so signal 0's discounted-but-nonzero weight still clears both the
+    # default REPLAY_MIN_SIGNAL_WEIGHT (== CONFIDENCE_WEIGHT_FLOOR) and
+    # REPLAY_MIN_PARTNER_STRENGTH thresholds -- both signals now corroborate each other.
+    assert result.replay_fired[0, 0] == True
+    assert result.replay_fired[0, 1] == True
 
 
 def test_attribute_priority_order_suppression_beats_everything():
@@ -296,12 +310,14 @@ def test_attribute_priority_order_suppression_beats_everything():
     values = np.array([[5.0], [5.0]])
     staleness = np.array([[4], [4]])  # exceeds threshold at both ticks
 
-    # This test isolates rule-priority resolution, not persistence -- disable
-    # persistence filtering explicitly since the 2-tick fixture below could
-    # never satisfy attribute()'s default (config.PLATEAU_MIN_PERSISTENCE_TICKS).
+    # This test isolates rule-priority resolution, not persistence or streak
+    # length -- disable both explicitly since the 2-tick fixture below could
+    # never satisfy attribute()'s defaults (config.PLATEAU_MIN_PERSISTENCE_TICKS,
+    # config.PLATEAU_MIN_FROZEN_STREAK_TICKS).
     result = attribute(
         residuals, values, staleness, calibration, graph, registry,
         drift_min_persistence_ticks=1, plateau_min_persistence_ticks=1,
+        plateau_min_frozen_streak_ticks=1,
     )
     assert result.primary_label[0, 0] == "suppression"
     assert result.primary_label[1, 0] == "suppression"
@@ -386,3 +402,190 @@ def test_suppression_attack_end_to_end_on_synthetic_data(tmp_path):
 
     before_window = attack_alignment.times < window.start_time
     assert not result.suppression_fired[before_window, target_index].any()
+
+
+# --- frozen_streak_length + detect_plateau robustness (Finding 2 fix) ---
+
+
+def test_frozen_streak_length_computes_run_length_ending_at_each_tick():
+    values = np.array([[1], [1], [1], [2], [2], [1]])
+    streak = frozen_streak_length(values)
+    np.testing.assert_array_equal(streak[:, 0], [1, 2, 3, 1, 2, 1])
+
+
+def test_detect_plateau_frozen_streak_survives_residual_dip_below_threshold():
+    """Core regression test for the plateau-mislabeled-as-drift bug (see
+    docs/notes-cascade-and-replay-investigation.md): a signal frozen for a
+    long streak whose residual exceeded threshold early in the streak, dips
+    below it mid-streak, then never exceeds again for the rest of the
+    streak -- the streak-scoped lookback should still fire throughout,
+    since the underlying attack never actually stopped.
+    """
+    calibration = _calibration(n_signals=1, residual_thresholds=[1.0])
+    values = np.array([[0.0]] + [[5.0]] * 8)  # frozen at 5.0 for 8 ticks after tick0
+    residuals = np.array([[0.0], [2.0], [2.0], [2.0], [0.1], [0.1], [0.1], [0.1], [0.1]])
+    fired = detect_plateau(values, residuals, calibration, min_frozen_streak_ticks=8)
+    # streak only reaches 8 at the final tick; residual exceeded at ticks 1-3
+    # (within the same streak, which started at tick 1) -- fires despite the
+    # current-tick residual (0.1) being well under threshold.
+    np.testing.assert_array_equal(fired[:, 0], [False] * 8 + [True])
+
+
+def test_detect_plateau_short_coincidental_repeat_does_not_count_as_frozen():
+    calibration = _calibration(n_signals=1, residual_thresholds=[1.0])
+    # a 2-tick repeat (streak maxes out at 2) with a large residual throughout --
+    # below min_frozen_streak_ticks=3, so it must never fire, proving the fix
+    # isn't simply "any repeat + any past exceedance fires."
+    values = np.array([[0.0], [5.0], [5.0], [9.0]])
+    residuals = np.array([[0.0], [2.0], [2.0], [2.0]])
+    fired = detect_plateau(values, residuals, calibration, min_frozen_streak_ticks=3)
+    assert not fired.any()
+
+
+def test_plateau_beats_drift_once_plateau_condition_is_fixed():
+    """attribute()-level integration test for Finding 2: once detect_plateau
+    correctly fires on a genuinely frozen signal, RULE_PRIORITY's existing
+    suppression > plateau > drift order (unchanged by this fix) correctly
+    resolves the primary label to "plateau", not "drift" -- confirming the
+    bug was plateau's own under-firing, not a priority-ordering problem.
+    """
+    calibration = _calibration(
+        n_signals=1, residual_thresholds=[1.0], staleness_thresholds=[1000.0],
+        cusum_k=[0.5], cusum_thresholds=[5.0], cusum_mean=[0.0],
+    )
+    graph = CorrelationGraph(edges=[], n_folds=1)
+    registry = FakeRegistry(n_signals=1)
+
+    values = np.array([[0.0]] + [[5.0]] * 7)  # frozen from tick1 onward
+    residuals = np.array([[0.0]] + [[3.0]] * 7)  # constant, large residual
+    staleness = np.zeros((8, 1))  # never suppressed
+
+    result = attribute(
+        residuals, values, staleness, calibration, graph, registry,
+        drift_min_persistence_ticks=1, plateau_min_persistence_ticks=1,
+        plateau_min_frozen_streak_ticks=3,
+    )
+    # by tick3 the streak has reached 3 (plateau eligible) and CUSUM has
+    # also crossed its threshold (drift independently eligible too) --
+    # both fire, and plateau wins the existing priority order.
+    for tick in range(3, 8):
+        assert result.plateau_fired[tick, 0]
+        assert result.drift_fired[tick, 0]
+        assert result.primary_label[tick, 0] == "plateau"
+
+
+# --- cascade_strength (Finding 1 fix) ---
+
+
+def test_cascade_strength_zero_when_no_other_signal_flagged():
+    calibration = _calibration(n_signals=2, staleness_thresholds=[3.0, 3.0])
+    suppression_fired = np.zeros((3, 2), dtype=bool)
+    plateau_fired = np.zeros((3, 2), dtype=bool)
+    staleness = np.zeros((3, 2))
+    frozen_streak = np.ones((3, 2))
+    strength = cascade_strength(suppression_fired, plateau_fired, staleness, frozen_streak, calibration)
+    assert not strength.any()
+
+
+def test_cascade_strength_reflects_other_signals_ratio_and_excludes_self():
+    calibration = _calibration(n_signals=2, staleness_thresholds=[3.0, 3.0])
+    suppression_fired = np.array([[True, False]])
+    plateau_fired = np.array([[False, False]])
+    staleness = np.array([[9.0, 0.0]])  # signal 0's ratio: 9/3 = 3.0
+    frozen_streak = np.ones((1, 2))
+    strength = cascade_strength(suppression_fired, plateau_fired, staleness, frozen_streak, calibration)
+    np.testing.assert_allclose(strength, [[0.0, 3.0]])  # signal 0 gets 0 (only itself was flagged); signal 1 sees signal 0's 3.0
+
+
+def test_attribute_cascade_discount_suppresses_drift_caused_by_unrelated_suppression():
+    """Core regression test for Finding 1 (cross-signal cascade
+    misattribution): signal 0 is strongly, genuinely suppressed; signal 1's
+    residual independently crosses drift's CUSUM threshold at the same
+    ticks (simulated cascade fallout). With the default discount threshold,
+    signal 1's drift firing should be discounted; with the discount
+    disabled, it should fire exactly as detect_drift alone would compute.
+    """
+    calibration = _calibration(
+        n_signals=2, residual_thresholds=[1.0, 1.0], staleness_thresholds=[3.0, 3.0],
+        cusum_k=[0.5, 0.5], cusum_thresholds=[5.0, 5.0], cusum_mean=[0.0, 0.0],
+    )
+    graph = CorrelationGraph(edges=[], n_folds=1)
+    registry = FakeRegistry(n_signals=2)
+
+    # values change every tick on both signals so plateau never fires -- isolates this test to drift.
+    values = np.column_stack([np.arange(5, dtype=float), np.arange(5, dtype=float)])
+    residuals = np.column_stack([np.zeros(5), np.full(5, 3.0)])  # signal 0 flat, signal 1 building CUSUM
+    staleness = np.column_stack([np.full(5, 10.0), np.zeros(5)])  # signal 0 far past its own threshold
+
+    discounted = attribute(
+        residuals, values, staleness, calibration, graph, registry,
+        drift_min_persistence_ticks=1, plateau_min_persistence_ticks=1,
+    )
+    assert not discounted.drift_fired[:, 1].any()  # signal 0's strong, independent suppression discounts it entirely
+
+    undiscounted = attribute(
+        residuals, values, staleness, calibration, graph, registry,
+        drift_min_persistence_ticks=1, plateau_min_persistence_ticks=1,
+        cascade_discount_strength_threshold=float("inf"),
+    )
+    assert undiscounted.drift_fired[2:, 1].all()  # with the discount disabled, real CUSUM crossings fire normally
+
+
+def test_attribute_cascade_discount_does_not_suppress_independent_multi_signal_drift():
+    """Guard-rail: two signals genuinely, independently drifting together
+    (no suppression/plateau firing anywhere) must NOT be discounted --
+    cascade_strength deliberately never uses `drift` as evidence for
+    discounting another signal's `drift`, precisely to avoid this.
+    """
+    calibration = _calibration(
+        n_signals=2, residual_thresholds=[1.0, 1.0], staleness_thresholds=[1000.0, 1000.0],
+        cusum_k=[0.5, 0.5], cusum_thresholds=[5.0, 5.0], cusum_mean=[0.0, 0.0],
+    )
+    graph = CorrelationGraph(edges=[], n_folds=1)
+    registry = FakeRegistry(n_signals=2)
+
+    values = np.column_stack([np.arange(5, dtype=float), np.arange(5, dtype=float)])
+    residuals = np.column_stack([np.full(5, 3.0), np.full(5, 3.0)])  # both signals build CUSUM identically
+    staleness = np.zeros((5, 2))  # neither ever suppressed
+
+    result = attribute(
+        residuals, values, staleness, calibration, graph, registry,
+        drift_min_persistence_ticks=1, plateau_min_persistence_ticks=1,
+    )
+    assert result.drift_fired[2:, 0].all()
+    assert result.drift_fired[2:, 1].all()
+
+
+# --- detect_replay decoupled from the shared confidence gate (Finding 3/4 fix) ---
+
+
+def test_detect_replay_low_confidence_partner_contributes_discounted_corroboration():
+    """Core regression test for the confidence-gate/replay dead-end (see
+    docs/notes-cascade-and-replay-investigation.md): under the old hard
+    boolean confidence_mask, a LOW CONF signal's residual could supply
+    NEITHER target NOR partner evidence, making replay impossible for any
+    pair involving it. With a continuous confidence_weight, a signal at
+    exactly CONFIDENCE_WEIGHT_FLOOR still corroborates.
+    """
+    calibration = _calibration(n_signals=2, residual_thresholds=[1.0, 1.0])
+    graph = CorrelationGraph(edges=[CorrelationEdge(signal_a=0, signal_b=1, strength=0.9, fold_agreement=5)], n_folds=5)
+    no_fire = np.zeros((1, 2), dtype=bool)
+
+    residuals = np.array([[2.0, 2.0]])
+    confidence_weight = np.array([0.35, 1.0])  # signal 0 at the floor, signal 1 full weight
+    fired = detect_replay(residuals, calibration, graph, no_fire, no_fire, confidence_weight=confidence_weight)
+    np.testing.assert_array_equal(fired, [[True, True]])
+
+
+def test_detect_replay_partner_weight_below_min_partner_strength_does_not_corroborate():
+    calibration = _calibration(n_signals=2, residual_thresholds=[1.0, 1.0])
+    graph = CorrelationGraph(edges=[CorrelationEdge(signal_a=0, signal_b=1, strength=0.9, fold_agreement=5)], n_folds=5)
+    no_fire = np.zeros((1, 2), dtype=bool)
+
+    residuals = np.array([[2.0, 2.0]])
+    # signal 0's weight (0.1) sits below both REPLAY_MIN_SIGNAL_WEIGHT (default
+    # floor 0.35, so it can't be a target either) and REPLAY_MIN_PARTNER_STRENGTH
+    # (0.25) -- too weak to corroborate signal 1 on its own.
+    confidence_weight = np.array([0.1, 1.0])
+    fired = detect_replay(residuals, calibration, graph, no_fire, no_fire, confidence_weight=confidence_weight)
+    np.testing.assert_array_equal(fired, [[False, False]])
