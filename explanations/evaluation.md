@@ -101,7 +101,7 @@ def rule_collision_matrix(attribution_result, ground_truth, attack_type) -> dict
 This builds a table of "for every genuinely attacked tick, which rule(s) actually fired on it?" — not just the single winning label, but every rule that fired at all. This is what reveals, for example, whether the `drift` rule is firing on ticks that were really a `plateau` or `suppression` attack — a sign that a rule is over-triggering on the wrong kind of anomaly. Ticks where nothing fired at all count as a complete miss under the `"none"` bucket.
 
 ```python
-def evaluate_attack_csv(model, registry, calibration, correlation, attack_csv_path, ...) -> tuple[AttributionResult, np.ndarray, np.ndarray]:
+def evaluate_attack_csv(model, registry, calibration, correlation, attack_csv_path, ..., return_residuals=False) -> tuple[AttributionResult, np.ndarray, np.ndarray]:
     test_df = load_attack(attack_csv_path)
     test_alignment = align_to_grid(test_df, registry, step=grid_step)
     test_joint = build_joint_vector(test_alignment, registry)
@@ -117,9 +117,11 @@ def evaluate_attack_csv(model, registry, calibration, correlation, attack_csv_pa
     gt_full, _source = resolve_ground_truth(attack_csv_path, test_df, test_alignment.times, grid_step)
     ground_truth = gt_full[tick_indices]
 
+    if return_residuals:
+        return result, ground_truth, tick_indices, residuals
     return result, ground_truth, tick_indices
 ```
-This runs the *entire pipeline* end-to-end on one attack test file: load the CSV, align it to the grid, build the joint vector and staleness counters, run the trained model to get predictions and prediction errors, feed everything into the attribution rules, and also figure out the true ground truth for comparison. It returns everything needed to then compute scoring metrics.
+This runs the *entire pipeline* end-to-end on one attack test file: load the CSV, align it to the grid, build the joint vector and staleness counters, run the trained model to get predictions and prediction errors, feed everything into the attribution rules, and also figure out the true ground truth for comparison. It returns everything needed to then compute scoring metrics. `return_residuals=True` additionally hands back the raw `(n_ticks, n_signals)` residual array itself (`y - pred`, before attribution), which `run_evaluation.py` uses for the pre-attribution forecast-residual report (per-signal bias/MAE/MSE/std) — everything else consumes only the 3-tuple.
 
 ```python
 def sensitivity_report(val_residuals, val_staleness, val_updated, registry, model, correlation, attack_csv_path, attack_type, ...) -> dict[float, DetectionMetrics]:

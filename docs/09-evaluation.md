@@ -112,9 +112,13 @@ against real data impractical.
 - **`rule_collision_matrix(attribution_result, ground_truth, attack_type)`**
   — the (tick, signal)-granularity tabulation described above, returning
   `{(attack_type, rule_name): count}`.
-- **`evaluate_attack_csv(model, registry, calibration, correlation, attack_csv_path, ...)`**
+- **`evaluate_attack_csv(model, registry, calibration, correlation, attack_csv_path, ..., return_residuals=False)`**
   — runs the pipeline against one CSV, returns raw
-  `(AttributionResult, ground_truth, tick_indices)`.
+  `(AttributionResult, ground_truth, tick_indices)`. Pass
+  `return_residuals=True` to get a 4-tuple with the raw `(n_ticks,
+  n_signals)` residual array appended, for callers (e.g.
+  `run_evaluation.py`'s pre-attribution residual report) that need the
+  forecast errors themselves rather than just the attribution outcome.
 - **`sensitivity_report(val_residuals, val_staleness, val_updated, registry, model, correlation, attack_csv_path, attack_type, ...)`**
   — `sensitivity_sweep` + `evaluate_attack_csv` + `detection_metrics` per
   percentile, returning `{percentile: DetectionMetrics}`.
