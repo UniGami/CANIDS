@@ -48,3 +48,7 @@ already-built pieces.
   fix surfaced but didn't fully resolve on the suppression test file.
 
 - `10-detector.md` — stage-1 windowed detector replacing the OR-of-rules "is anything wrong?" decision; real-data results, ablations, caveats.
+  Includes the practice-attack (stricter) test: `scripts/build_injected_attacks.py`, `scripts/injected_check.py`.
+- `11-real-data-results.md` — real SynCAN results in one place: tick-level, event-level, old-vs-new comparison, and attack-type labels, with how they were produced and caveats.
+- `12-branch2.md` — Branch 2 (message-rate Isolation Forest + plausibility limits), fusion (Branch 1 OR Branch 2), flooding/fuzzing labels, real and practice results, and why the limits matter.
+  Branch 2 also covers: whether the Isolation Forest earns its place (it does not on SynCAN), and `scripts/fit_branch2.py`.

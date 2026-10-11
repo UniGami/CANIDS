@@ -36,7 +36,9 @@ from canids.calibration import calibrate
 from canids.config import (
     CUSUM_ADAPTIVE_DECAY,
     DEFAULT_CALIBRATION_PERCENTILE,
+    BRANCH2_TARGET_ALERTS_PER_MINUTE,
     DETECTOR_TARGET_ALERTS_PER_MINUTE,
+    RATE_WINDOW_TICKS,
     DETECTOR_WINDOW_TICKS,
     DRIFT_MIN_PERSISTENCE_TICKS,
     EVENT_ALERT_MERGE_GAP_TICKS,
@@ -57,11 +59,14 @@ from canids.data.staleness import compute_staleness
 from canids.data.syncan import TEST_FILES as SYNCAN_TEST_FILES
 from canids.data.synthetic import ATTACK_TYPES
 from canids.data.windowing import build_joint_vector, valid_forecast_ticks
-from canids.classify import DRIFT, FALSE_ALARM, PLATEAU, REPLAY, SUPPRESSION, type_accuracy, type_confusion
+from canids.classify import (
+    DRIFT, FALSE_ALARM, FLOODING, FUZZING, PLATEAU, REPLAY, SUPPRESSION, type_accuracy, type_confusion,
+)
 from canids.detector import NormalStream, fit_detector
 from canids.evaluate import evaluate_all, evaluate_attack_csv, normal_stream_from_df, per_signal_residual_stats
 from canids.models import naive
 from canids.models.gru_seq2seq import GRUForecaster, load_model, predict_streaming, save_model, train_streaming
+from canids.models.isolation_forest import Branch2Model, fit_branch2
 from canids.registry import build_registry
 
 
@@ -161,6 +166,16 @@ def main() -> None:
         "--skip-detector", action="store_true",
         help="skip the stage-1 windowed detector (detector.py) and report only the legacy rule-OR verdict",
     )
+    parser.add_argument(
+        "--skip-branch2", action="store_true",
+        help="skip Branch 2 (Isolation Forest over message rates) and the fused Branch 1 OR Branch 2 verdict",
+    )
+    parser.add_argument(
+        "--branch2-model-path", type=Path, default=Path("models") / "isolation_forest_syncan_train1.joblib",
+        help="load a previously fitted Branch 2 model from here if it exists; otherwise fit on the normal CSV's "
+        "training part (calibrating on its validation part and the detector's extra normal CSVs) and save it here",
+    )
+    parser.add_argument("--branch2-target-alerts-per-min", type=float, default=BRANCH2_TARGET_ALERTS_PER_MINUTE)
     parser.add_argument("--detector-window", type=int, default=DETECTOR_WINDOW_TICKS)
     parser.add_argument(
         "--detector-target-alerts-per-min", type=float, default=DETECTOR_TARGET_ALERTS_PER_MINUTE,
@@ -296,9 +311,31 @@ def main() -> None:
             f"(target {detector.target_alerts_per_minute})"
         )
 
+    branch2 = None
+    if not args.skip_branch2:
+        if args.branch2_model_path.exists():
+            print(f"loading Branch 2 model from {args.branch2_model_path}")
+            branch2 = Branch2Model.load(args.branch2_model_path)
+        else:
+            extra_b2 = args.detector_extra_normal_csv
+            if extra_b2 is None:
+                default_extra = RAW_DATA_DIR / "syncan_train_2.csv"
+                extra_b2 = [default_extra] if args.attack_source == "syncan" and default_extra.exists() and default_extra != args.normal_csv else []
+            branch2 = fit_branch2(
+                train_df, [val_df, *[load_normal(path) for path in extra_b2]],
+                target_alerts_per_minute=args.branch2_target_alerts_per_min, window=RATE_WINDOW_TICKS, step=args.grid_step,
+            )
+            branch2.save(args.branch2_model_path)
+            print(f"saved Branch 2 model to {args.branch2_model_path}")
+        print(
+            f"Branch 2: {len(branch2.id_names)} IDs, window={branch2.window} ticks, forest tau={branch2.tau:.4f}, "
+            f"calibrated on {branch2.calibration_minutes:.1f} min of normal traffic "
+            f"({branch2.calibration_alerts_per_minute:.3f} forest alerts/min there)"
+        )
+
     result = evaluate_all(
         model, registry, calibration, correlation, attack_csvs, confidence_mask=confidence_mask,
-        detector=detector,
+        detector=detector, branch2=branch2,
         confidence_weight=confidence_weight,
         sequence_length=args.sequence_length, batch_size=args.batch_size, grid_step=args.grid_step,
         val_residuals=val_residuals if args.sweep else None,
@@ -327,20 +364,35 @@ def main() -> None:
         _print_header("STAGE-1 WINDOWED DETECTOR -- EVENT-level")
         _print_event_table(result.detector_event_metrics)
 
-        _print_header("ATTACK-TYPE labels for the detector's alerts (rows = what really happened, columns = what we said)")
-        counts = type_confusion(result.detector_outputs, result.ground_truths, detector)
-        cols = [SUPPRESSION, PLATEAU, DRIFT, REPLAY]
-        print(f"{'real attack':14s} " + " ".join(f"{c:>16s}" for c in cols))
-        for row in [*result.detector_outputs, FALSE_ALARM]:
-            print(f"{row:14s} " + " ".join(f"{counts.get((row, c), 0):16d}" for c in cols))
-        acc = type_accuracy(counts, list(result.detector_outputs))
+        if branch2 is not None:
+            _print_header("BRANCH 2 ALONE (Isolation Forest + plausibility limits) -- TICK-level")
+            _print_tick_table(result.branch2_metrics)
+            _print_header("BRANCH 2 ALONE -- EVENT-level")
+            _print_event_table(result.branch2_event_metrics)
+            _print_header("FUSED (Branch 1 OR Branch 2) -- TICK-level")
+            _print_tick_table(result.fused_metrics)
+            _print_header("FUSED (Branch 1 OR Branch 2) -- EVENT-level")
+            _print_event_table(result.fused_event_metrics)
+
+        fused = branch2 is not None
+        outputs = result.fused_outputs if fused else result.detector_outputs
+        _print_header(
+            f"ATTACK-TYPE labels for the {'fused' if fused else 'Branch 1'} alerts "
+            "(rows = what really happened, columns = what we said)"
+        )
+        counts = type_confusion(outputs, result.ground_truths, detector)
+        cols = [SUPPRESSION, PLATEAU, DRIFT, REPLAY] + ([FLOODING, FUZZING] if fused else [])
+        print(f"{'real attack':14s} " + " ".join(f"{c:>12s}" for c in cols))
+        for row in [*outputs, FALSE_ALARM]:
+            print(f"{row:14s} " + " ".join(f"{counts.get((row, c), 0):12d}" for c in cols))
+        acc = type_accuracy(counts, list(outputs))
         print("\nShare of alerts labelled with the right attack type:")
         for t, (ok, total) in acc.items():
             print(f"  {t:12s} {ok}/{total}  = {ok / total:.3f}" if total else f"  {t:12s} no alerts")
-        branch1 = [t for t in acc if t != "flooding"]
-        ok = sum(acc[t][0] for t in branch1)
-        total = sum(acc[t][1] for t in branch1)
-        print(f"  overall, excluding flooding (Branch 2's job): {ok}/{total} = {ok / total:.3f}")
+        counted = [t for t in acc if fused or t != "flooding"]
+        ok = sum(acc[t][0] for t in counted)
+        total = sum(acc[t][1] for t in counted)
+        print(f"  overall{'' if fused else ', excluding flooding (Branch 2 not run)'}: {ok}/{total} = {ok / total:.3f}")
 
     _print_header("Rule-collision confusion matrix (ground-truth ticks only, signal-tick pairs)")
     if not result.rule_confusion:

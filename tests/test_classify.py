@@ -20,20 +20,21 @@ CAL = DetectorCalibration(
 )
 
 
-def _output(n=1000, streak=1.0, jump_at=None, jump=5.0, **spans):
+def _output(n=1000, streak=1.0, smooth_span=None, **spans):
     """DetectorOutput whose channels are 0 except inside the given (start, end) spans, set to 5 (> TAU).
     `streak` is how long the top residual signal's value has been unchanged, at every tick.
-    `jump_at`, if given, is a tick where some signal's value jumps by `jump` times the biggest normal jump."""
+    `smooth_span`, if given, is a (start, end) range of ticks where some signal moves smoothly in one direction."""
     channels = {c: np.zeros(n) for c in ("signed", "stale", "frozen")}
     for name, (a, b) in spans.items():
         channels[name][a:b] = 5.0
     score = np.max(list(channels.values()), axis=0)
-    jump_score = np.zeros(n)
-    if jump_at is not None:
-        jump_score[jump_at] = jump
+    smooth_ramp = np.zeros(n, dtype=bool)
+    if smooth_span is not None:
+        smooth_ramp[smooth_span[0] : smooth_span[1]] = True
     return DetectorOutput(
         score=score, flags=score > TAU, channel_scores=channels,
-        top_signal=np.zeros(n, dtype=int), top_signal_streak=np.full(n, float(streak)), jump_score=jump_score,
+        top_signal=np.zeros(n, dtype=int), top_signal_streak=np.full(n, float(streak)), jump_score=np.zeros(n),
+        smooth_ramp=smooth_ramp,
     )
 
 
@@ -46,8 +47,8 @@ def test_frozen_alert_is_plateau():
     assert classify_alerts(_output(frozen=(100, 200)), CAL)[0].label == PLATEAU
 
 
-def test_residual_only_alert_without_a_jump_is_drift():
-    assert classify_alerts(_output(signed=(100, 200)), CAL)[0].label == DRIFT
+def test_residual_only_alert_with_no_smooth_movement_is_replay():
+    assert classify_alerts(_output(signed=(100, 200)), CAL)[0].label == REPLAY
 
 
 def test_suppression_wins_over_plateau_and_residual_when_all_fire():
@@ -77,7 +78,7 @@ def test_type_confusion_counts_true_types_and_false_alarms():
     }
     counts = type_confusion(outputs, {"plateau": gt_plateau}, CAL)
 
-    assert counts == {("plateau", PLATEAU): 1, (FALSE_ALARM, DRIFT): 1}
+    assert counts == {("plateau", PLATEAU): 1, (FALSE_ALARM, REPLAY): 1}
 
 
 def test_type_accuracy_counts_each_attack_against_its_own_label():
@@ -104,26 +105,46 @@ def test_flat_top_signal_makes_a_residual_alert_a_plateau():
 
 
 def test_moving_top_signal_is_not_a_plateau():
-    assert classify_alerts(_output(signed=(100, 200), streak=WINDOW - 1), CAL)[0].label == DRIFT
+    assert classify_alerts(_output(signed=(100, 200), streak=WINDOW - 1), CAL)[0].label == REPLAY
 
 
 def test_suppression_still_wins_over_a_flat_top_signal():
     assert classify_alerts(_output(stale=(100, 200), signed=(100, 200), streak=500), CAL)[0].label == SUPPRESSION
 
 
-def test_jump_just_before_the_alert_starts_makes_it_a_replay():
-    # The alert only starts once evidence has built up, so the real onset can be a little earlier.
-    assert classify_alerts(_output(signed=(300, 400), jump_at=300 - WINDOW), CAL)[0].label == REPLAY
+def test_smooth_one_way_movement_during_the_alert_makes_it_a_drift():
+    assert classify_alerts(_output(signed=(300, 400), smooth_span=(320, 380)), CAL)[0].label == DRIFT
 
 
-def test_jump_far_before_the_alert_is_ignored():
-    far = 300 - 3 * WINDOW - 20
-    assert classify_alerts(_output(signed=(300, 400), jump_at=far), CAL)[0].label == DRIFT
+def test_smooth_movement_outside_the_alert_is_ignored():
+    assert classify_alerts(_output(signed=(300, 400), smooth_span=(900, 980)), CAL)[0].label == REPLAY  # beyond alert + lookahead
 
 
-def test_jump_that_is_not_bigger_than_normal_does_not_count():
-    assert classify_alerts(_output(signed=(300, 400), jump_at=300, jump=1.0), CAL)[0].label == DRIFT
+def test_suppression_and_plateau_still_win_over_smooth_movement():
+    assert classify_alerts(_output(stale=(300, 400), signed=(300, 400), smooth_span=(300, 400)), CAL)[0].label == SUPPRESSION
+    assert classify_alerts(_output(frozen=(300, 400), smooth_span=(300, 400)), CAL)[0].label == PLATEAU
 
 
-def test_jump_only_matters_for_residual_alerts_plateau_still_wins():
-    assert classify_alerts(_output(frozen=(300, 400), jump_at=300), CAL)[0].label == PLATEAU
+def test_smooth_movement_just_after_the_alert_counts_only_with_lookahead():
+    # A drift alert can close before the ramp has run long enough to look smooth; the smooth stretch shows up just after.
+    out = _output(signed=(300, 400), smooth_span=(420, 500))
+    assert classify_alerts(out, CAL, lookahead_ticks=0)[0].label == REPLAY
+    assert classify_alerts(out, CAL, lookahead_ticks=10)[0].label == REPLAY  # alert ends at 400; smooth starts at 420
+    assert classify_alerts(out, CAL, lookahead_ticks=30)[0].label == DRIFT
+
+
+def test_lookahead_flows_through_type_confusion():
+    gt = np.zeros(1000, dtype=bool)
+    gt[300:400] = True
+    outputs = {"drift": _output(signed=(300, 400), smooth_span=(420, 500))}
+
+    assert type_confusion(outputs, {"drift": gt}, CAL, lookahead_ticks=0) == {("drift", REPLAY): 1}
+    assert type_confusion(outputs, {"drift": gt}, CAL, lookahead_ticks=30) == {("drift", DRIFT): 1}
+
+
+def test_default_lookahead_is_one_smoothness_window():
+    from canids.config import SMOOTH_LAG_TICKS, SMOOTH_LOOKAHEAD_TICKS
+
+    assert SMOOTH_LOOKAHEAD_TICKS == 6 * SMOOTH_LAG_TICKS
+    out = _output(n=2000, signed=(300, 400), smooth_span=(400 + SMOOTH_LOOKAHEAD_TICKS - 20, 400 + SMOOTH_LOOKAHEAD_TICKS))
+    assert classify_alerts(out, CAL)[0].label == DRIFT  # within the default lookahead

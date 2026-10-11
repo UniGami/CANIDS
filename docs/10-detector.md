@@ -89,9 +89,13 @@ carry over to a different car or a different dataset.
 
 ## Caveats
 
-- The calibration set is ~62 min, so 0.1 alerts/min resolves to ~6 alerts; the
-  achieved rate on held-out normal (test_normal second half) was 1-2 alerts in
-  37 min. A longer/more diverse normal set would tighten this.
+- The calibration set is ~62 min, so 0.1 alerts/min resolves to ~6 alerts. On the
+  fully held-out `syncan_test_normal.csv` (75 min, never used for any
+  threshold) the final detector raised 9 alerts = 0.12/min when flags within
+  1 s are one alert (the unit the 0.1 budget is in), or 20 alerts = 0.27/min
+  with the finer 0.1 s merging used in the event tables (the same events split
+  into short pieces). All 20 got a "replay" (16) or "plateau" (4) label, never
+  suppression or drift. A longer/more diverse normal set would tighten this.
 - Window/target/percentiles were first chosen after looking at whole attack
   files; the out-of-sample check above addresses this for window and budget
   (not for the channel set or percentiles, which were not re-chosen there).
@@ -101,8 +105,7 @@ carry over to a different car or a different dataset.
 ## Attack-type labels (`classify.py`)
 
 Once the detector raises an alert, plain rules name the type (no training, no
-attack data; every cutoff is "bigger than normal traffic ever gets" or the
-detector's own window length):
+attack data):
 
 1. staleness channel above threshold -> **suppression**
 2. else a value stuck in place -> **plateau**, seen two ways: the frozen-value
@@ -110,45 +113,182 @@ detector's own window length):
    peak has not changed for a whole window (this second way is what catches
    plateaus on signals that are naturally flat for thousands of ticks in
    normal driving, where the first way can never fire)
-3. else a sudden value jump near the alert's start -> **replay**
-4. else -> **drift**
+3. else some signal moves **smoothly in one direction** during the alert, or in
+   the 360 ticks (one smoothness window) after it ends
+   (`detector.smooth_one_way`, `config.SMOOTH_LOOKAHEAD_TICKS`) -> **drift**
+4. else -> **replay**
+
+The look-past-the-end part exists because a drift alert can close before the ramp
+has run long enough to look smooth; the label is therefore final only 3.6 s after
+the alert closes.
 
 Real SynCAN, first half / second half of each file (`scripts/classify_split_check.py`):
 
-| real attack | first half | second half |
-|---|---|---|
-| suppression | 61/61 | 61/61 |
-| plateau | 52/58 | 52/60 |
-| drift | 55/58 | 54/59 |
-| replay | 36/71 | 52/81 |
-| overall (excl. flooding) | **0.823** | **0.839** |
+| real attack | first half | second half | before the smooth-movement rule (2nd half) | smooth rule, no lookahead (2nd half) |
+|---|---|---|---|---|
+| suppression | 61/61 | 61/61 | 61/61 | 61/61 |
+| plateau | 52/58 | 52/60 | 52/60 | 52/60 |
+| drift | 58/58 | 55/59 | 54/59 | 49/59 |
+| replay | 57/71 | 74/81 | 52/81 | 75/81 |
+| overall (excl. flooding) | **0.919** | **0.927** | 0.839 | 0.908 |
 
-Replay is the weak spot: a replay is labelled correctly only when it starts
-with a visible jump (about 65% of them); the rest are called drift (or
-plateau, if the signal happened to be flat). Flooding has no label of its own
-(Branch 2's job): its alerts land mostly on "plateau".
+(Columns 2-3 are the current rules, with the lookahead. On the full real files
+the end-to-end `scripts/run_evaluation.py` run gave 462/509 = 0.908 without the
+lookahead.)
 
-What was tested for telling drift from replay (all on real data, alerts that
-reached rule 3; "AUC" 0.5 = coin flip, 1.0 = perfect):
+Flooding has no label of its own (Branch 2's job): its alerts land mostly on
+"plateau" (stuck-looking values) and "replay".
 
-- jump at the start of the alert: AUC 0.81, the only strong separator
-- how early the evidence peaks inside the alert (drift peaks late): 0.78 alone,
-  but adding it to the jump rule did **not** improve the result on the first
-  halves, so it was left out
-- correlated partners' forecast errors: 0.42 (no use -- the model's shared
-  memory spreads error to partners whatever the attack)
-- number of signals affected / same-ID signals: no use
-- sign consistency of the error: replay is *more* consistent, not less (0.77)
-- rise time to half-peak: 0.68, did not help in combination
+### Why rule 3 works: what drift and replay look like in the raw numbers
+Printing the raw values of the attacked signal over a few attack intervals
+showed the real difference:
+
+- **Drift** is a perfectly smooth curve with no wiggle: either an exact
+  straight line (e.g. `id5_sig1` rising 0.031 every 24 ticks for six seconds,
+  then snapping back to the true value) or a steadily accelerating one (steps
+  that grow: 0.002, 0.005, 0.009, 0.012 ...). Natural signals never move like
+  that.
+- **Replay** is a natural, wiggly trajectory (rises, bends, flat stretches),
+  just belonging to a different moment of the drive.
+
+`smooth_one_way` samples a signal at 7 ticks 60 apart (a 3.6 s window) and asks
+that it only goes one way, changes by at least 0.02, and has tiny third
+differences (a straight or steadily curving line has ~0). Measured with the
+final settings: present in 91% (first half) / 84% (second half) of drift
+alerts and in only 3% / 0% of replay alerts; on normal driving it fires on
+0.04-0.13% of ticks (train_1 validation, train_2, test_normal).
+
+**Caveat:** this relies on drift being a clean smooth curve. A drift that rides on
+top of the true wiggly signal would still be detected, but this rule would call it
+replay (see the practice-attack test below: ~45% right). Loosening the smoothness
+tolerance does NOT fix the drifts that were missed (first halves: eps 0.06 and 0.10
+cost replay accuracy, 59/60 -> 56/60 -> 46/60, without helping drift): the missed
+drifts were mostly alert fragments that ended before 3.6 s of ramp had built up
+(median alert 138 ticks, covering ~21% of the attack), not noisy ramps. That is
+what the lookahead fixes.
+
+### How the settings were chosen, and what did not work
+Developed on the FIRST halves only (the second halves were run once, at the
+end). The window (lag 40 / 60), smoothness (0.02 / 0.03 / 0.05) and minimum
+change (0.02 / 0.05) were chosen from a small grid on the first halves
+(lag 40 gave overall 0.86, lag 60 gave 0.90-0.91). No model is fitted on
+attack labels.
+
+Tried and dropped (AUC 0.5 = coin flip, 1.0 = perfect, alerts that reached
+rule 3 on the first halves):
+
+- **Sudden value jump at the alert start** (the previous rule 3): AUC 0.78, but
+  only ~60% of replays have a jump; as the only replay clue it gave replay 51%.
+  Adding it on top of the smooth-movement rule changed nothing, so it was removed
+  from the rule (`jump_score` is still computed by the detector but unused).
+- **Relational mismatch with correlated partners** (a ridge regression of each
+  signal on its cross-ID graph partners; R^2 is 0.95-1.00 on normal data for
+  12 of 17 signals): strong on normal data, but drift breaks the relationship
+  *more* than replay does (median 14x vs 3.8x normal-max), so it does not
+  separate them (AUC 0.38-0.50). Partner **changes** over 50-500 ms: no better
+  (AUC 0.44-0.59).
+- Onset surprise, how early the evidence peaks (0.78 alone, no gain combined),
+  rise time (0.68), number of signals affected / same-ID signals (no use),
+  sign consistency (replay is *more* consistent), end-of-alert snap-back
+  (0.71, trades drift for replay).
+- Voting between the weak clues: balanced 0.76 at best.
+- **Exact copies of earlier values** (a replay copying recorded frames): inside
+  replay attacks 3-frame value sequences repeat no more than outside, even
+  against all normal data (train_1, train_2, test_normal): the replayed values
+  are not bit-identical to anything available.
+- A start-jump "plateau rescue": made plateau worse (52 -> 25 of 58); real
+  plateaus also show a jump at the start.
+- Straight-line fits only (R^2 over a window): caught ~56% of drift; the rest
+  are curved, which is what led to "smooth one-way movement".
 
 The features were found by looking at the attack files, so the table above is
 a consistency check (same on both halves), not proof the rules carry over to
 another car or dataset.
 
+## Stricter test: practice attacks made from normal traffic (`scripts/injected_check.py`)
+Because the type rules were designed while looking at the real attack files, those
+files are no longer a clean test of them. So `scripts/build_injected_attacks.py`
+builds practice attacks from the held-out normal file `syncan_test_normal.csv`
+into NEW files (`data/synthetic/injected_*.csv`, git-ignored, with an
+`*_events.json` listing each injected event). The original dataset is only read:
+the script checks its SHA-256 before and after (`c7229f82...`, unchanged).
+Each file has 100 events of 4.5-8 s, 20-50 s apart, every ID's rows labelled 1 in
+the interval, as SynCAN does. Rebuild and cache them with:
+
+    python scripts/build_injected_attacks.py
+    python scripts/cache_gru_outputs.py <cache_dir> --only-extra --extra injected_replay=data/synthetic/injected_replay.csv ...
+    python scripts/injected_check.py <cache_dir>
+
+Kinds: `replay` (a whole ID replaced, frame by frame, by its own frames 20-200 s
+earlier), `drift_replace` (one signal replaced by its start value plus a smooth
+linear or accelerating ramp - what the real traces looked like), `drift_additive`
+(a smooth ramp ADDED on top of the true wiggly signal), `plateau`.
+
+An early version of the builder clipped ramps at the signal's range limit; 30-87
+of ~140 drifts then came out flat and were rightly labelled plateau. The builder
+was fixed (a ramp only runs where there is room, `min_room`), the files rebuilt and
+the check rerun. This fix was made after seeing the first run.
+
+Results with the final rules (detector fitted on train_1 validation + train_2 only):
+
+| file | event recall | strict precision | labelled correctly, no lookahead | with lookahead |
+|---|---|---|---|---|
+| injected_replay | 0.93 | 0.88 | 126/152 = 0.83 | 123/152 = 0.81 |
+| injected_drift_replace | 1.00 | 0.87 | 113/126 = 0.90 | **125/126 = 0.99** |
+| injected_drift_additive | 1.00 | 0.85 | 43/101 = 0.43 | 46/101 = 0.46 |
+| injected_plateau | 0.85 | 0.83 | 79/99 = 0.80 | 79/99 = 0.80 |
+| (real) replay / drift / plateau | 0.99 / 0.93 / 0.97 | 0.94 / 0.93 / 0.85 | 0.88 / 0.86 / 0.88 | 0.86 / 0.97 / 0.88 |
+
+How the lookahead was decided, with the rule fixed BEFORE running: adopt it if,
+on the practice attacks, drift_replace and replay do not get worse by more than 2
+points, and on the real second halves overall accuracy does not drop. Result:
+drift_replace +9.5 points, replay -2.0 points (126 -> 123 of 152, right at the
+limit), real second halves 0.908 -> 0.927. Adopted.
+
+What this test does and does not show:
+- Detection and the replay / plateau labels on practice attacks are the
+  independent evidence: a different process made them than the one the rules were
+  designed on. They land close to the real-file numbers (replay 0.83 vs 0.88,
+  plateau 0.80 vs 0.88).
+- `drift_replace` is built like the real drift traces looked, so it is a sanity
+  check, not independent evidence.
+- `drift_additive` is the real stress test and the rule mostly FAILS it: those
+  drifts are detected (recall 1.00) but ~55% are labelled replay, because a smooth
+  ramp riding on a wiggly signal is not smooth. The rule only recognises drift
+  that replaces the signal with a clean curve (or rides on an already-smooth
+  signal, which explains the ~45% it gets right).
+- Still one dataset; the practice attacks and the real files both derive from
+  SynCAN.
+
+## Old pipeline vs this one (why the old calibration/attribution is not used for the headline numbers)
+`calibration.py` and `attribution/rules.py` are untouched and still run, printed
+as the "LEGACY" tables by `run_evaluation.py`, as the before-picture. They are
+not used for the headline numbers because:
+
+- one threshold per signal, OR-ed over 20 signals, cannot be tuned to a
+  false-alarm target (small per-signal rates add up to almost every tick);
+- the drift rule's CUSUM never forgot a big past deviation, so after one attack
+  it stayed on for the rest of the file (e.g. ~367k false ticks on the
+  suppression file, whose own staleness signal was clean);
+- thresholds from a single short slice of normal driving mistook other driving
+  styles for attacks;
+- its type labels were mostly wrong (e.g. the drift file's attacked ticks were
+  labelled replay ~241k times and drift ~36k times).
+
+`correlation.py` (the partner graph) still exists and was used for the
+relational-mismatch experiments above, but it did not make it into the final
+type rules.
+
 ## Open
 
-- Replay recall (about 60%): needs a feature for replays that start without
-  a jump.
+- Drift that rides on the true signal (`drift_additive` practice attacks) is
+  detected but mostly labelled replay; a rule for that needs a different clue
+  (e.g. the relational mismatch growing steadily).
+- The second halves of the real files have now been looked at three times (final
+  report, a diagnosis of the missed drifts, the lookahead decision), so they are
+  no longer fully blind; the practice attacks are the cleaner test.
 - Flooding is not nameable by this module; Branch 2 (rate-based) should own it.
 - The type rules sit on top of the GRU's residuals; whether the TCN changes
   these numbers is untested.
+- `CLAUDE.md` and `PLAN.md` still describe the old attribution layer; update at
+  the end of the project.

@@ -43,6 +43,9 @@ from canids.config import (
     DETECTOR_WINDOW_TICKS,
     EVENT_MERGE_GAP_TICKS,
     GRID_STEP_SECONDS,
+    SMOOTH_EPS,
+    SMOOTH_LAG_TICKS,
+    SMOOTH_MIN_CHANGE,
 )
 
 CHANNELS = ("signed", "stale", "frozen")
@@ -69,6 +72,43 @@ def value_jumps(values: np.ndarray) -> np.ndarray:
     jumps = np.zeros(values.shape, dtype=np.float64)
     jumps[1:] = np.abs(np.diff(values.astype(np.float64), axis=0))
     return jumps
+
+
+def smooth_one_way(
+    values: np.ndarray,
+    lag: int = SMOOTH_LAG_TICKS,
+    eps: float = SMOOTH_EPS,
+    min_change: float = SMOOTH_MIN_CHANGE,
+    chunk: int = 50_000,
+) -> np.ndarray:
+    """(n_ticks, n_signals) bool: True where, over the trailing 6*lag ticks, a
+    signal moved steadily in ONE direction and perfectly smoothly -- a straight
+    or steadily curving line with no wiggle. Sampled at 7 ticks `lag` apart:
+    all 6 steps have the same sign, the total change is >= min_change, and the
+    3rd differences are <= eps * the total change.
+
+    Natural driving signals wiggle, so this almost never fires on normal data
+    (well under 1% of ticks on real SynCAN); SynCAN's drift attack adds a
+    noise-free straight or accelerating ramp, so it does. (An attacker who added
+    noise to the ramp would hide from THIS clue, though not from the detector.)
+    Processed in chunks so a full 450k-tick file does not need a gigabyte of
+    temporaries.
+    """
+    n, m = values.shape
+    out = np.zeros((n, m), dtype=bool)
+    span = 6 * lag
+    for start in range(span, n, chunk):
+        stop = min(start + chunk, n)
+        v = values[start - span : stop].astype(np.float64)  # row r <-> tick start - span + r
+        newest = v[span:]  # ticks start .. stop-1
+        samples = np.stack([v[k * lag : k * lag + (stop - start)] for k in range(7)], axis=0)  # samples[6] == newest
+        d1 = np.diff(samples, axis=0)
+        d3 = np.diff(samples, n=3, axis=0)
+        total = newest - samples[0]
+        mono = np.all(d1 > 0, axis=0) | np.all(d1 < 0, axis=0)
+        smooth = np.abs(d3).max(axis=0) <= eps * np.abs(total)
+        out[start:stop] = mono & smooth & (np.abs(total) >= min_change)
+    return out
 
 
 def rolling_mean(x: np.ndarray, window: int) -> np.ndarray:
@@ -137,6 +177,7 @@ class DetectorOutput:
     top_signal: np.ndarray  # (n_ticks,) int: the signal with the largest signed-residual evidence at each tick
     top_signal_streak: np.ndarray  # (n_ticks,) raw ticks that top signal's value has been unchanged (for type attribution)
     jump_score: np.ndarray  # (n_ticks,) biggest single-tick value jump over all signals, in units of "biggest normal jump"
+    smooth_ramp: np.ndarray  # (n_ticks,) bool: some signal is moving smoothly in one direction (see smooth_one_way)
 
 
 def _normalized(channels: dict[str, np.ndarray], scales: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
@@ -227,4 +268,5 @@ def detect(
         top_signal=top_signal,
         top_signal_streak=top_signal_streak,
         jump_score=jump_score,
+        smooth_ramp=smooth_one_way(values).any(axis=1),
     )

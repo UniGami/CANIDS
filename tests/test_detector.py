@@ -9,6 +9,7 @@ from canids.detector import (
     evidence_channels,
     fit_detector,
     rolling_mean,
+    smooth_one_way,
 )
 
 N_SIGNALS = 4
@@ -148,3 +149,58 @@ def test_jump_scales_survive_save_and_load(tmp_path):
     path = tmp_path / "det.json"
     det.save(path)
     np.testing.assert_allclose(DetectorCalibration.load(path).jump_scales, det.jump_scales)
+
+
+def _signals(n=3000, seed=0):
+    """Two natural-looking, wiggly signals on a 0-1 scale."""
+    r = np.random.default_rng(seed)
+    t = np.arange(n)
+    return np.stack([0.5 + 0.2 * np.sin(t / 37.0) + r.normal(0, 0.003, n), 0.4 + 0.1 * np.sin(t / 91.0) + r.normal(0, 0.003, n)], axis=1)
+
+
+def test_smooth_one_way_flags_a_straight_ramp():
+    v = _signals()
+    v[1000:2000, 0] = 0.3 + 0.0003 * np.arange(1000)  # exact straight line, +0.3 over 1000 ticks
+    out = smooth_one_way(v, lag=60, eps=0.03, min_change=0.02)
+
+    assert out[1600:2000, 0].all()  # once a full window sits inside the ramp
+    assert not out[:1000, 0].any()  # wiggly natural signal before it
+
+
+def test_smooth_one_way_flags_an_accelerating_curve():
+    v = _signals()
+    x = np.arange(1000) / 1000.0
+    v[1000:2000, 0] = 0.2 + 0.6 * x**2  # steadily curving, noise-free
+    assert smooth_one_way(v, lag=60, eps=0.03, min_change=0.02)[1600:2000, 0].all()
+
+
+def test_smooth_one_way_ignores_a_ramp_with_noise_a_wiggle_and_a_flat_line():
+    r = np.random.default_rng(1)
+    v = _signals()
+    v[1000:2000, 0] = 0.3 + 0.0003 * np.arange(1000) + r.normal(0, 0.02, 1000)  # same ramp, noisy
+    v[1000:2000, 1] = 0.5  # perfectly flat: no movement, so not "moving"
+    out = smooth_one_way(v, lag=60, eps=0.03, min_change=0.02)
+
+    assert not out[1600:2000, 0].any()
+    assert not out[1000:2000, 1].any()
+
+
+def test_smooth_one_way_needs_a_full_window_and_a_big_enough_change():
+    v = _signals()
+    v[1000:1100, 0] = 0.3 + 0.0003 * np.arange(100)  # ramp much shorter than the 360-tick window
+    v[2000:2800, 1] = 0.3 + 0.00001 * np.arange(800)  # ramp that only changes by 0.008 (< min_change)
+    out = smooth_one_way(v, lag=60, eps=0.03, min_change=0.02)
+
+    assert not out[1000:1100, 0].any()
+    assert not out[2400:2800, 1].any()
+
+
+def test_detect_reports_smooth_ramp_per_tick():
+    det = fit_detector([_normal_stream(seed=0), _normal_stream(seed=1)], window=20)
+    test = _normal_stream(seed=2)
+    test.values[5000:6000, 2] = 0.2 + 0.0004 * np.arange(1000)
+    out = detect(det, test.residuals, test.staleness, test.values)
+
+    assert out.smooth_ramp.shape == out.flags.shape
+    assert out.smooth_ramp[5600:6000].all()
+    assert not out.smooth_ramp[:4000].any()

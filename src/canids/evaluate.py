@@ -39,12 +39,14 @@ from canids.config import (
 )
 from canids.correlation import CorrelationGraph
 from canids.detector import DetectorCalibration, DetectorOutput, NormalStream, detect
+from canids.fusion import FusedOutput, fuse
 from canids.data.grid import align_to_grid
 from canids.data.loader import load_attack
 from canids.data.staleness import compute_staleness
 from canids.data.synthetic import load_attack_window
 from canids.data.windowing import build_joint_vector, valid_forecast_ticks
 from canids.models.gru_seq2seq import GRUForecaster, predict_streaming
+from canids.models.isolation_forest import Branch2Model, Branch2Output, detect_branch2
 from canids.registry import Registry
 from canids.runs import merge_runs, runs
 
@@ -324,6 +326,7 @@ class AttackRun:
     residuals: np.ndarray  # (n_ticks, n_signals) y - pred
     values: np.ndarray
     staleness: np.ndarray
+    branch2: Branch2Output | None = None  # on the FULL grid of the CSV (index with tick_indices to align)
 
 
 def normal_stream_from_df(
@@ -363,6 +366,7 @@ def evaluate_attack_csv(
     confidence_weight: np.ndarray | None = None,
     return_residuals: bool = False,
     return_run: bool = False,
+    branch2: Branch2Model | None = None,
 ) -> tuple[AttributionResult, np.ndarray, np.ndarray] | AttackRun:
     """Run the full detect + attribute pipeline against one attack CSV,
     reusing predict_streaming (never materializes a full window array, see
@@ -410,7 +414,8 @@ def evaluate_attack_csv(
     ground_truth = gt_full[tick_indices]
 
     if return_run:
-        return AttackRun(result, ground_truth, tick_indices, residuals, values_at_ticks, staleness_at_ticks)
+        b2 = detect_branch2(branch2, test_df, grid_step) if branch2 is not None else None
+        return AttackRun(result, ground_truth, tick_indices, residuals, values_at_ticks, staleness_at_ticks, b2)
     if return_residuals:
         return result, ground_truth, tick_indices, residuals
     return result, ground_truth, tick_indices
@@ -472,6 +477,13 @@ class EvaluationResult:
     detector_metrics: list[DetectionMetrics] = field(default_factory=list)
     detector_event_metrics: list[EventMetrics] = field(default_factory=list)
     detector_outputs: dict[str, DetectorOutput] = field(default_factory=dict)
+    # Branch 2 alone, and the fused (Branch 1 OR Branch 2) verdict; filled when evaluate_all gets a branch2 model
+    # (and, for the fused ones, a detector too).
+    branch2_metrics: list[DetectionMetrics] = field(default_factory=list)
+    branch2_event_metrics: list[EventMetrics] = field(default_factory=list)
+    fused_metrics: list[DetectionMetrics] = field(default_factory=list)
+    fused_event_metrics: list[EventMetrics] = field(default_factory=list)
+    fused_outputs: dict[str, FusedOutput] = field(default_factory=dict)
     ground_truths: dict[str, np.ndarray] = field(default_factory=dict)
 
 
@@ -499,6 +511,7 @@ def evaluate_all(
     event_min_coverage: float = EVENT_MIN_COVERAGE,
     event_alert_merge_gap_ticks: int = EVENT_ALERT_MERGE_GAP_TICKS,
     detector: DetectorCalibration | None = None,
+    branch2: Branch2Model | None = None,
 ) -> EvaluationResult:
     """Orchestrator: runs evaluate_attack_csv + detection_metrics +
     rule_collision_matrix across every entry in attack_csvs (e.g.
@@ -518,6 +531,11 @@ def evaluate_all(
     detector_event_metrics: list[EventMetrics] = []
     detector_outputs: dict[str, DetectorOutput] = {}
     ground_truths: dict[str, np.ndarray] = {}
+    branch2_metrics: list[DetectionMetrics] = []
+    branch2_event_metrics: list[EventMetrics] = []
+    fused_metrics: list[DetectionMetrics] = []
+    fused_event_metrics: list[EventMetrics] = []
+    fused_outputs: dict[str, FusedOutput] = {}
     rule_confusion: dict[tuple[str, str], int] = {}
     sensitivity: dict[str, dict[float, DetectionMetrics]] = {}
 
@@ -529,6 +547,7 @@ def evaluate_all(
             drift_cusum_decay, value_range_gate,
             confidence_weight=confidence_weight,
             return_run=True,
+            branch2=branch2,
         )
         result, ground_truth = run.attribution, run.ground_truth
         detector_flag = detector_flags_from_attribution(result)
@@ -552,6 +571,26 @@ def evaluate_all(
                 )
             )
 
+        if branch2 is not None:
+            b2_flags = run.branch2.flags[run.tick_indices]
+            branch2_metrics.append(detection_metrics(b2_flags, ground_truth, attack_type, calibration.percentile))
+            branch2_event_metrics.append(
+                event_metrics(
+                    b2_flags, ground_truth, attack_type, grid_step,
+                    event_merge_gap_ticks, event_min_coverage, event_alert_merge_gap_ticks,
+                )
+            )
+            if detector is not None:
+                fused = fuse(out, run.branch2, run.tick_indices)
+                fused_outputs[attack_type] = fused
+                fused_metrics.append(detection_metrics(fused.flags, ground_truth, attack_type, calibration.percentile))
+                fused_event_metrics.append(
+                    event_metrics(
+                        fused.flags, ground_truth, attack_type, grid_step,
+                        event_merge_gap_ticks, event_min_coverage, event_alert_merge_gap_ticks,
+                    )
+                )
+
         collision = rule_collision_matrix(result, ground_truth, attack_type)
         for key, count in collision.items():
             rule_confusion[key] = rule_confusion.get(key, 0) + count
@@ -574,4 +613,9 @@ def evaluate_all(
         detector_event_metrics=detector_event_metrics,
         detector_outputs=detector_outputs,
         ground_truths=ground_truths,
+        branch2_metrics=branch2_metrics,
+        branch2_event_metrics=branch2_event_metrics,
+        fused_metrics=fused_metrics,
+        fused_event_metrics=fused_event_metrics,
+        fused_outputs=fused_outputs,
     )

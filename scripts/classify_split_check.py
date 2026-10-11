@@ -22,6 +22,7 @@ from pathlib import Path
 import numpy as np
 
 from canids.classify import DRIFT, FALSE_ALARM, PLATEAU, REPLAY, SUPPRESSION, type_accuracy, type_confusion
+from canids.config import SMOOTH_LOOKAHEAD_TICKS
 from canids.detector import NormalStream, detect, fit_detector
 from canids.evaluate import quiet_split_point
 
@@ -53,6 +54,10 @@ def _show(title: str, counts: dict[tuple[str, str], int]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("cache_dir", type=Path)
+    parser.add_argument(
+        "--lookahead", type=int, default=SMOOTH_LOOKAHEAD_TICKS,
+        help="let each alert look this many ticks past its end for smooth movement (default config.SMOOTH_LOOKAHEAD_TICKS; 0 = off)",
+    )
     args = parser.parse_args()
 
     det = fit_detector([_stream(_load(args.cache_dir, n)) for n in ("train1_val", "train2")])
@@ -65,8 +70,8 @@ def main() -> None:
         second_out[a] = _slice(out, slice(t, None))
         first_gt[a], second_gt[a] = d["gt"][:t], d["gt"][t:]
 
-    _show("FIRST halves", type_confusion(first_out, first_gt, det))
-    _show("SECOND halves", type_confusion(second_out, second_gt, det))
+    _show(f"FIRST halves (lookahead {args.lookahead})", type_confusion(first_out, first_gt, det, lookahead_ticks=args.lookahead))
+    _show(f"SECOND halves (lookahead {args.lookahead})", type_confusion(second_out, second_gt, det, lookahead_ticks=args.lookahead))
 
 
 def _slice(out, sl):
@@ -80,6 +85,7 @@ def _slice(out, sl):
         top_signal=out.top_signal[sl],
         top_signal_streak=out.top_signal_streak[sl],
         jump_score=out.jump_score[sl],
+        smooth_ramp=out.smooth_ramp[sl],
     )
 
 

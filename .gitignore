@@ -24,6 +24,7 @@ data/synthetic/*
 # it currently sits.
 SynCAN-master.zip
 src/canids/SynCAN-master.zip
+results.txt
 
 # Caches / tooling
 .pytest_cache/

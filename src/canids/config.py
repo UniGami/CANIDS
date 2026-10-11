@@ -151,6 +151,29 @@ DETECTOR_STALENESS_MARGIN = 1.5
 # for a signal; used to spot the sudden jump at the start of a replay (classify.py).
 DETECTOR_JUMP_PERCENTILE = 99.99
 
+# "Smooth one-way movement" (detector.smooth_one_way), the clue that tells drift from replay in classify.py.
+# A signal counts as moving smoothly one way if, sampled at 7 evenly spaced ticks SMOOTH_LAG_TICKS apart
+# (so over 6 * SMOOTH_LAG_TICKS ticks), it only ever goes up or only ever goes down, it changed by at least
+# SMOOTH_MIN_CHANGE (signals live on a 0-1 scale), and its 3rd differences are at most SMOOTH_EPS times the
+# total change (a straight or steadily curving line has ~0; a natural, wiggly signal does not). These three
+# were chosen from a small set of candidates on the FIRST halves of the real drift/replay files (see
+# docs/10-detector.md); on normal driving they trip on well under 1% of ticks. 60 ticks -> a 3.6 s window, which
+# fits inside the 4.5-8 s attacks.
+SMOOTH_LAG_TICKS = 60
+SMOOTH_EPS = 0.03
+SMOOTH_MIN_CHANGE = 0.02
+# An alert can end before a drift's ramp has been going for a full smoothness window (6 * SMOOTH_LAG_TICKS), and
+# the missed drifts were mostly exactly such short alert fragments. classify.py can therefore let an alert look this
+# many ticks PAST its end for smooth movement: one full window, a principled value rather than a tuned one.
+SMOOTH_LOOKAHEAD_TICKS = 6 * SMOOTH_LAG_TICKS
+
+# Branch 2 (rate_features.py, models/isolation_forest.py): message-rate / plausibility features are measured over
+# the trailing RATE_WINDOW_TICKS ticks (0.5 s, the same length as the stage-1 detector window), so both branches
+# talk about the same stretch of time. The Isolation Forest's alert threshold uses the same false-alarm budget
+# idea as the detector (BRANCH2_TARGET_ALERTS_PER_MINUTE).
+RATE_WINDOW_TICKS = 50
+BRANCH2_TARGET_ALERTS_PER_MINUTE = 0.1
+
 # Normal-value-range gate for drift/plateau (attribution/rules.py's
 # _in_normal_value_range, calibration.calibrate_value_range): a signal's
 # rule is suppressed when its current value sits comfortably within its own
