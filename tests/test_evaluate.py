@@ -16,6 +16,7 @@ from canids.evaluate import (
     detector_flags_from_attribution,
     evaluate_all,
     evaluate_attack_csv,
+    event_metrics,
     resolve_ground_truth,
     rule_collision_matrix,
     tick_ground_truth_from_labels,
@@ -218,3 +219,98 @@ def test_evaluate_all_covers_every_attack_type(small_pipeline_fixture):
         assert 0 <= m.false_positives
     # every rule_confusion key's attack_type must be one we actually evaluated
     assert all(attack_type in ATTACK_TYPES for attack_type, _rule in result.rule_confusion)
+
+
+def _mask(n, *spans):
+    m = np.zeros(n, dtype=bool)
+    for a, b in spans:
+        m[a:b] = True
+    return m
+
+
+def test_event_metrics_matches_hand_computed_values():
+    # Two attack intervals (10-20, 50-60); detector flags part of the first, misses the second,
+    # and raises one false alarm at 80-85.
+    gt = _mask(100, (10, 20), (50, 60))
+    flag = _mask(100, (12, 15), (80, 85))
+    m = event_metrics(flag, gt, "replay", step=0.01, merge_gap_ticks=3)
+
+    assert (m.n_events, m.n_detected) == (2, 1)
+    assert (m.n_alerts, m.n_true_alerts, m.n_false_alarms) == (2, 1, 1)
+    np.testing.assert_allclose(m.recall, 0.5)
+    np.testing.assert_allclose(m.precision, 0.5)
+    np.testing.assert_allclose(m.mean_coverage, (3 / 10 + 0) / 2)
+    # 100 ticks - 20 attacked ticks = 80 normal ticks = 0.8 s -> 1 false alarm / (0.8/60) min
+    np.testing.assert_allclose(m.false_alarms_per_minute, 1 / (80 * 0.01 / 60))
+
+
+def test_event_metrics_merges_sparse_ground_truth_labels_into_one_event():
+    # Real SynCAN labels mark individual frames: an interval is scattered ticks with small gaps.
+    gt = np.zeros(1000, dtype=bool)
+    gt[100:400:7] = True  # gaps of 6 ticks, one interval
+    gt[800:900:7] = True  # a second interval, far away
+    flag = _mask(1000, (150, 160))
+    m = event_metrics(flag, gt, "plateau", merge_gap_ticks=100)
+
+    assert m.n_events == 2
+    assert m.n_detected == 1
+
+
+def test_event_metrics_counts_a_long_false_flag_run_as_one_false_alarm():
+    gt = _mask(1000, (100, 200))
+    flag = _mask(1000, (100, 200), (400, 900))  # 500 false-flagged ticks
+    m = event_metrics(flag, gt, "drift", merge_gap_ticks=10)
+
+    assert m.n_false_alarms == 1
+    np.testing.assert_allclose(m.precision, 0.5)
+    np.testing.assert_allclose(m.recall, 1.0)
+
+
+def test_event_metrics_merges_nearby_flag_runs_into_one_alert():
+    gt = _mask(1000, (100, 300))
+    flag = _mask(1000, (100, 120), (130, 150), (500, 510), (515, 520))
+    m = event_metrics(flag, gt, "flooding", merge_gap_ticks=20, alert_merge_gap_ticks=20)
+
+    assert m.n_alerts == 2  # (100-150) and (500-520)
+    assert m.n_true_alerts == 1
+
+
+def test_event_metrics_min_coverage_makes_detection_stricter():
+    gt = _mask(100, (10, 30))
+    flag = _mask(100, (10, 14))  # 4 of 20 ticks = 20% coverage
+    lenient = event_metrics(flag, gt, "drift", min_coverage=0.0)
+    strict = event_metrics(flag, gt, "drift", min_coverage=0.5)
+
+    assert lenient.n_detected == 1
+    assert strict.n_detected == 0
+    np.testing.assert_allclose(strict.recall, 0.0)
+
+
+def test_event_metrics_undefined_cases_are_nan_not_zero():
+    no_flags = event_metrics(np.zeros(50, dtype=bool), _mask(50, (10, 20)), "x")
+    assert np.isnan(no_flags.precision) and no_flags.recall == 0.0
+
+    no_events = event_metrics(_mask(50, (10, 20)), np.zeros(50, dtype=bool), "x")
+    assert np.isnan(no_events.recall) and no_events.precision == 0.0
+    assert np.isnan(no_events.mean_coverage)
+
+
+def test_event_metrics_strict_precision_exposes_one_giant_alert():
+    # A detector that flags nearly everything yields ONE alert overlapping the attack: lenient
+    # precision is a flattering 1.0, strict precision (alert must be >=50% inside attacks) is 0.
+    gt = _mask(1000, (400, 500))
+    flag = _mask(1000, (0, 1000))
+    m = event_metrics(flag, gt, "drift")
+
+    assert m.n_alerts == 1
+    np.testing.assert_allclose(m.precision, 1.0)
+    np.testing.assert_allclose(m.strict_precision, 0.0)
+    np.testing.assert_allclose(m.recall, 1.0)
+
+
+def test_event_metrics_strict_precision_accepts_alert_slightly_wider_than_attack():
+    gt = _mask(1000, (400, 500))
+    flag = _mask(1000, (390, 520))  # 100 of 130 ticks inside
+    m = event_metrics(flag, gt, "drift")
+
+    np.testing.assert_allclose(m.strict_precision, 1.0)

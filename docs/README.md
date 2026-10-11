@@ -46,3 +46,5 @@ already-built pieces.
   against real data (`replay` recall 12.8%→72.6%, `plateau` recall
   65.0%→92.4%), with an honest note on a second-order cascade effect the
   fix surfaced but didn't fully resolve on the suppression test file.
+
+- `10-detector.md` — stage-1 windowed detector replacing the OR-of-rules "is anything wrong?" decision; real-data results, ablations, caveats.

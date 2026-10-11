@@ -36,7 +36,12 @@ from canids.calibration import calibrate
 from canids.config import (
     CUSUM_ADAPTIVE_DECAY,
     DEFAULT_CALIBRATION_PERCENTILE,
+    DETECTOR_TARGET_ALERTS_PER_MINUTE,
+    DETECTOR_WINDOW_TICKS,
     DRIFT_MIN_PERSISTENCE_TICKS,
+    EVENT_ALERT_MERGE_GAP_TICKS,
+    EVENT_MERGE_GAP_TICKS,
+    EVENT_MIN_COVERAGE,
     GRID_STEP_SECONDS,
     PLATEAU_MIN_PERSISTENCE_TICKS,
     RANDOM_SEED,
@@ -52,7 +57,9 @@ from canids.data.staleness import compute_staleness
 from canids.data.syncan import TEST_FILES as SYNCAN_TEST_FILES
 from canids.data.synthetic import ATTACK_TYPES
 from canids.data.windowing import build_joint_vector, valid_forecast_ticks
-from canids.evaluate import evaluate_all, evaluate_attack_csv, per_signal_residual_stats
+from canids.classify import DRIFT, FALSE_ALARM, PLATEAU, REPLAY, SUPPRESSION, type_accuracy, type_confusion
+from canids.detector import NormalStream, fit_detector
+from canids.evaluate import evaluate_all, evaluate_attack_csv, normal_stream_from_df, per_signal_residual_stats
 from canids.models import naive
 from canids.models.gru_seq2seq import GRUForecaster, load_model, predict_streaming, save_model, train_streaming
 from canids.registry import build_registry
@@ -72,6 +79,30 @@ def _default_attack_csvs(source: str) -> dict[str, Path]:
 
 def _fmt_metric(x: float) -> str:
     return "  n/a  " if x != x else f"{x:.4f}"  # x != x is the cheap, allocation-free NaN check
+
+
+def _print_tick_table(metrics) -> None:
+    print(f"{'attack_type':14s} {'n_gt':>8s} {'flagged':>8s} {'TP':>6s} {'FP':>8s} {'FN':>6s} {'precision':>9s} {'recall':>9s} {'f1':>9s}")
+    for m in metrics:
+        print(
+            f"{m.attack_type:14s} {m.n_ground_truth:8d} {m.n_flagged:8d} {m.true_positives:6d} "
+            f"{m.false_positives:8d} {m.false_negatives:6d} {_fmt_metric(m.precision):>9s} "
+            f"{_fmt_metric(m.recall):>9s} {_fmt_metric(m.f1):>9s}"
+        )
+
+
+def _print_event_table(metrics) -> None:
+    print(
+        f"{'attack_type':14s} {'events':>7s} {'detected':>8s} {'alerts':>7s} {'true':>6s} {'false':>6s} "
+        f"{'FA/min':>7s} {'coverage':>8s} {'prec':>7s} {'strictP':>7s} {'recall':>7s} {'f1':>7s} {'strictF1':>8s}"
+    )
+    for e in metrics:
+        print(
+            f"{e.attack_type:14s} {e.n_events:7d} {e.n_detected:8d} {e.n_alerts:7d} {e.n_true_alerts:6d} "
+            f"{e.n_false_alarms:6d} {_fmt_metric(e.false_alarms_per_minute):>7s} {_fmt_metric(e.mean_coverage):>8s} "
+            f"{_fmt_metric(e.precision):>7s} {_fmt_metric(e.strict_precision):>7s} {_fmt_metric(e.recall):>7s} "
+            f"{_fmt_metric(e.f1):>7s} {_fmt_metric(e.strict_f1):>8s}"
+        )
 
 
 def _print_header(title: str) -> None:
@@ -112,6 +143,34 @@ def main() -> None:
         "--no-value-range-gate", action="store_true",
         help="disable the normal-value-range gate on drift/plateau (see "
         "attribution/rules.py's in_normal_value_range); on by default",
+    )
+    parser.add_argument(
+        "--event-merge-gap-ticks", type=int, default=EVENT_MERGE_GAP_TICKS,
+        help="event-level metrics: merge ground-truth runs and flagged runs separated by at most this many ticks",
+    )
+    parser.add_argument(
+        "--event-alert-merge-gap-ticks", type=int, default=EVENT_ALERT_MERGE_GAP_TICKS,
+        help="event-level metrics: merge flagged runs separated by at most this many ticks into one alert",
+    )
+    parser.add_argument(
+        "--event-min-coverage", type=float, default=EVENT_MIN_COVERAGE,
+        help="event-level metrics: fraction of an attack interval's ticks that must be flagged for it to count "
+        "as detected (0.0 = any single flagged tick; 0.5 = at least half)",
+    )
+    parser.add_argument(
+        "--skip-detector", action="store_true",
+        help="skip the stage-1 windowed detector (detector.py) and report only the legacy rule-OR verdict",
+    )
+    parser.add_argument("--detector-window", type=int, default=DETECTOR_WINDOW_TICKS)
+    parser.add_argument(
+        "--detector-target-alerts-per-min", type=float, default=DETECTOR_TARGET_ALERTS_PER_MINUTE,
+        help="false-alarm budget the detector threshold is calibrated to, in alerts per minute of NORMAL traffic",
+    )
+    parser.add_argument(
+        "--detector-extra-normal-csv", type=Path, nargs="*", default=None,
+        help="extra NORMAL-ONLY CSVs (other driving regimes) to calibrate the detector on, besides the "
+        "validation slice of --normal-csv. Defaults to data/raw/syncan_train_2.csv for --attack-source syncan "
+        "(if present). Never pass attack data here.",
     )
     parser.add_argument("--val-fraction", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=RANDOM_SEED)
@@ -212,8 +271,34 @@ def main() -> None:
             for s in per_signal_residual_stats(attack_residuals, registry):
                 print(f"  {s.signal_name:12s} bias={s.bias:+.5f}  MAE={s.mae:.5f}  MSE={s.mse:.5f}  std={s.std:.5f}")
 
+    detector = None
+    if not args.skip_detector:
+        extra = args.detector_extra_normal_csv
+        if extra is None:
+            default_extra = RAW_DATA_DIR / "syncan_train_2.csv"
+            extra = [default_extra] if args.attack_source == "syncan" and default_extra.exists() and default_extra != args.normal_csv else []
+        streams = [NormalStream(val_residuals, val_staleness[val_ticks], val_alignment.values[val_ticks])]
+        for path in extra:
+            print(f"detector calibration: adding normal stream {path}")
+            streams.append(
+                normal_stream_from_df(
+                    model, registry, load_normal(path), args.sequence_length, args.batch_size, args.grid_step
+                )
+            )
+        detector = fit_detector(
+            streams, window=args.detector_window,
+            target_alerts_per_minute=args.detector_target_alerts_per_min, step=args.grid_step,
+        )
+        print(
+            f"detector: window={detector.window} ticks  tau={detector.tau:.3f}  calibrated on "
+            f"{detector.calibration_minutes:.1f} min of normal traffic "
+            f"({len(streams)} stream(s)), {detector.calibration_alerts_per_minute:.3f} alerts/min there "
+            f"(target {detector.target_alerts_per_minute})"
+        )
+
     result = evaluate_all(
         model, registry, calibration, correlation, attack_csvs, confidence_mask=confidence_mask,
+        detector=detector,
         confidence_weight=confidence_weight,
         sequence_length=args.sequence_length, batch_size=args.batch_size, grid_step=args.grid_step,
         val_residuals=val_residuals if args.sweep else None,
@@ -224,16 +309,38 @@ def main() -> None:
         plateau_min_persistence_ticks=args.plateau_persistence_ticks,
         drift_cusum_decay=args.drift_cusum_decay,
         value_range_gate=not args.no_value_range_gate,
+        event_merge_gap_ticks=args.event_merge_gap_ticks,
+        event_min_coverage=args.event_min_coverage,
+        event_alert_merge_gap_ticks=args.event_alert_merge_gap_ticks,
     )
 
-    _print_header("Per-attack-type detection metrics")
-    print(f"{'attack_type':14s} {'n_gt':>8s} {'flagged':>8s} {'TP':>6s} {'FP':>8s} {'FN':>6s} {'precision':>9s} {'recall':>9s} {'f1':>9s}")
-    for m in result.per_attack_metrics:
-        print(
-            f"{m.attack_type:14s} {m.n_ground_truth:8d} {m.n_flagged:8d} {m.true_positives:6d} "
-            f"{m.false_positives:8d} {m.false_negatives:6d} {_fmt_metric(m.precision):>9s} "
-            f"{_fmt_metric(m.recall):>9s} {_fmt_metric(m.f1):>9s}"
-        )
+    _print_header("LEGACY rule-OR verdict -- TICK-level")
+    _print_tick_table(result.per_attack_metrics)
+    _print_header(
+        f"LEGACY rule-OR verdict -- EVENT-level (attack merge gap={args.event_merge_gap_ticks}, "
+        f"alert merge gap={args.event_alert_merge_gap_ticks} ticks, min coverage={args.event_min_coverage})"
+    )
+    _print_event_table(result.per_attack_event_metrics)
+    if detector is not None:
+        _print_header("STAGE-1 WINDOWED DETECTOR -- TICK-level")
+        _print_tick_table(result.detector_metrics)
+        _print_header("STAGE-1 WINDOWED DETECTOR -- EVENT-level")
+        _print_event_table(result.detector_event_metrics)
+
+        _print_header("ATTACK-TYPE labels for the detector's alerts (rows = what really happened, columns = what we said)")
+        counts = type_confusion(result.detector_outputs, result.ground_truths, detector)
+        cols = [SUPPRESSION, PLATEAU, DRIFT, REPLAY]
+        print(f"{'real attack':14s} " + " ".join(f"{c:>16s}" for c in cols))
+        for row in [*result.detector_outputs, FALSE_ALARM]:
+            print(f"{row:14s} " + " ".join(f"{counts.get((row, c), 0):16d}" for c in cols))
+        acc = type_accuracy(counts, list(result.detector_outputs))
+        print("\nShare of alerts labelled with the right attack type:")
+        for t, (ok, total) in acc.items():
+            print(f"  {t:12s} {ok}/{total}  = {ok / total:.3f}" if total else f"  {t:12s} no alerts")
+        branch1 = [t for t in acc if t != "flooding"]
+        ok = sum(acc[t][0] for t in branch1)
+        total = sum(acc[t][1] for t in branch1)
+        print(f"  overall, excluding flooding (Branch 2's job): {ok}/{total} = {ok / total:.3f}")
 
     _print_header("Rule-collision confusion matrix (ground-truth ticks only, signal-tick pairs)")
     if not result.rule_confusion:

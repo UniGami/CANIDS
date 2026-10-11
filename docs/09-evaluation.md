@@ -161,3 +161,23 @@ curve PLAN.md's Step 13 section originally sketched, or extend calibration
 to pool residuals across multiple files (the real-data narrowness question
 `docs/notes-real-data-scaling.md`'s Priority 2 diagnostic investigates),
 those are separate, explicitly-scoped follow-ups — not folded in here.
+
+## Event-level metrics (`event_metrics`)
+
+Added alongside the tick-level `detection_metrics`; both are printed by
+`scripts/run_evaluation.py` and `scripts/attack_confusion_matrix.py`.
+
+- **Ground-truth events:** contiguous attacked runs merged across gaps of up
+  to `EVENT_MERGE_GAP_TICKS` (100 = 1 s). Real SynCAN labels individual
+  frames, so an interval is scattered ticks; measured on all 5 real attack
+  files this reconstructs exactly 93–122 intervals per file (4.5–8 s each).
+- **Alerts:** flagged runs merged across gaps of up to
+  `EVENT_ALERT_MERGE_GAP_TICKS` (10 = 0.1 s). A 1 s gap was tried first and
+  is degenerate: a detector flagging ~70% of ticks fuses the whole file into
+  one alert that overlaps the attacks and scores precision 1.0.
+- **Recall:** detected events / events (detected = flagged-tick coverage ≥
+  `EVENT_MIN_COVERAGE`, default 0.0 = any flagged tick).
+- **Precision (lenient):** alerts overlapping any event / alerts.
+- **Strict precision:** alerts with ≥50% of their ticks inside attacks /
+  alerts. Cannot be inflated by one huge alert; this is the number to quote.
+- Also reported: mean coverage and false alarms per minute of normal time.

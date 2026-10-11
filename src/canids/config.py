@@ -115,6 +115,42 @@ CUSUM_ADAPTIVE_DECAY = 0.0001
 DRIFT_MIN_PERSISTENCE_TICKS = 12
 PLATEAU_MIN_PERSISTENCE_TICKS = 12
 
+# Event-level evaluation (evaluate.py's event_metrics). Real SynCAN's Label
+# column marks individual attacked frames, so a ground-truth attack interval
+# shows up as scattered ticks, not one solid run. Measured on all 5 real
+# attack files: ~93-122 intervals per file, 4.5-8 s each, separated by
+# >= ~1 s of normal driving, while labeled ticks WITHIN an interval are
+# never more than ~0.5 s apart. 100 ticks (1 s at the 0.01 s grid) therefore
+# reconstructs the intervals exactly (EVENT_MERGE_GAP_TICKS). Flagged ticks
+# are merged into alerts with a MUCH smaller gap (EVENT_ALERT_MERGE_GAP_TICKS,
+# 0.1 s): using the 1 s gap there too was tried first and found to be
+# degenerate on this project's real data -- when a detector flags ~70% of all
+# ticks, a 1 s gap fuses the whole file into ONE alert that overlaps the
+# attacks, reading as precision 1.0. EVENT_MIN_COVERAGE=0.0 means "an attack interval counts as
+# detected if at least one of its ticks is flagged" (lenient); raise it
+# (e.g. 0.5) for a stricter "most of the interval must be flagged" rule.
+EVENT_MERGE_GAP_TICKS = 100
+EVENT_ALERT_MERGE_GAP_TICKS = 10
+EVENT_MIN_COVERAGE = 0.0
+
+# Stage-1 windowed detector (detector.py). Values below were chosen on real
+# SynCAN data -- see docs/10-detector.md for the experiments. WINDOW_TICKS=50
+# (0.5 s): 25 was less sensitive to drift (event recall 0.79 vs 0.91), 100 no
+# better. TARGET_ALERTS_PER_MINUTE=0.1 (one false alarm per ~10 min of normal
+# driving): 0.3 cost 10-30 points of event precision for a few points of
+# recall. SCALE_PERCENTILE/FROZEN_PERCENTILE set each signal's evidence scale
+# so ~1.0 means "as large as normal traffic gets"; STALENESS_MARGIN scales the
+# largest staleness seen in normal data (real normal data never exceeds 4
+# ticks; real suppression gaps are hundreds).
+DETECTOR_WINDOW_TICKS = 50
+DETECTOR_TARGET_ALERTS_PER_MINUTE = 0.1
+DETECTOR_SCALE_PERCENTILE = 99.9
+DETECTOR_FROZEN_PERCENTILE = 99.99
+DETECTOR_STALENESS_MARGIN = 1.5
+# Percentile of normal single-tick value changes that counts as "the biggest jump normal traffic ever makes"
+# for a signal; used to spot the sudden jump at the start of a replay (classify.py).
+DETECTOR_JUMP_PERCENTILE = 99.99
+
 # Normal-value-range gate for drift/plateau (attribution/rules.py's
 # _in_normal_value_range, calibration.calibrate_value_range): a signal's
 # rule is suppressed when its current value sits comfortably within its own

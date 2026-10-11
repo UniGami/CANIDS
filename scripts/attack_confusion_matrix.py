@@ -27,6 +27,9 @@ from canids.config import (
     CUSUM_ADAPTIVE_DECAY,
     DEFAULT_CALIBRATION_PERCENTILE,
     DRIFT_MIN_PERSISTENCE_TICKS,
+    EVENT_ALERT_MERGE_GAP_TICKS,
+    EVENT_MERGE_GAP_TICKS,
+    EVENT_MIN_COVERAGE,
     GRID_STEP_SECONDS,
     PLATEAU_MIN_PERSISTENCE_TICKS,
     RANDOM_SEED,
@@ -42,7 +45,7 @@ from canids.data.staleness import compute_staleness
 from canids.data.syncan import TEST_FILES as SYNCAN_TEST_FILES
 from canids.data.synthetic import ATTACK_TYPES
 from canids.data.windowing import build_joint_vector, valid_forecast_ticks
-from canids.evaluate import detector_flags_from_attribution, evaluate_attack_csv
+from canids.evaluate import detector_flags_from_attribution, evaluate_attack_csv, event_metrics
 from canids.models import naive
 from canids.models.gru_seq2seq import GRUForecaster, load_model, predict_streaming, save_model, train_streaming
 from canids.registry import build_registry
@@ -72,6 +75,9 @@ def main() -> None:
     parser.add_argument("--plateau-persistence-ticks", type=int, default=PLATEAU_MIN_PERSISTENCE_TICKS)
     parser.add_argument("--drift-cusum-decay", type=float, default=CUSUM_ADAPTIVE_DECAY)
     parser.add_argument("--no-value-range-gate", action="store_true")
+    parser.add_argument("--event-merge-gap-ticks", type=int, default=EVENT_MERGE_GAP_TICKS)
+    parser.add_argument("--event-alert-merge-gap-ticks", type=int, default=EVENT_ALERT_MERGE_GAP_TICKS)
+    parser.add_argument("--event-min-coverage", type=float, default=EVENT_MIN_COVERAGE)
     parser.add_argument("--val-fraction", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=RANDOM_SEED)
     parser.add_argument("--grid-step", type=float, default=GRID_STEP_SECONDS)
@@ -155,6 +161,16 @@ def main() -> None:
     print(f"n_ticks={n_ticks:,}  n_ground_truth={n_gt:,}  n_flagged={n_flagged:,}")
     print(f"TP={tp:,}  FP={fp:,}  TN={tn:,}  FN={fn:,}")
     print(f"precision={precision:.4f}  recall={recall:.4f}  f1={f1:.4f}")
+
+    ev = event_metrics(
+        detector_flag, ground_truth, args.attack_type, args.grid_step,
+        args.event_merge_gap_ticks, args.event_min_coverage, args.event_alert_merge_gap_ticks,
+    )
+    print(f"\nEvent level (attack merge gap={args.event_merge_gap_ticks}, alert merge gap={args.event_alert_merge_gap_ticks} ticks, min coverage={args.event_min_coverage})")
+    print(f"attack intervals={ev.n_events}  detected={ev.n_detected}  mean_coverage={ev.mean_coverage:.4f}")
+    print(f"alerts={ev.n_alerts}  true={ev.n_true_alerts}  false_alarms={ev.n_false_alarms}  ({ev.false_alarms_per_minute:.3f}/min of normal time)")
+    print(f"event precision={ev.precision:.4f} (strict, alert >=50% inside attacks: {ev.strict_precision:.4f})  event recall={ev.recall:.4f}")
+    print(f"event f1={ev.f1:.4f} (strict {ev.strict_f1:.4f})")
 
 
 if __name__ == "__main__":
