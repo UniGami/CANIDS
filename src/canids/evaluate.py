@@ -385,6 +385,10 @@ def evaluate_attack_csv(
     docs/notes-cascade-and-replay-investigation.md; unlike the other
     knobs here, it is NOT derived from `confidence_mask` if omitted --
     that's attribute()'s own fallback, not this function's.
+
+    With `return_residuals=True`, a fourth element is appended: the raw
+    (n_evaluated_ticks, n_signals) forecast residuals (actual - predicted),
+    for the pre-attribution residual report.
     """
     test_df = load_attack(attack_csv_path)
     test_alignment = align_to_grid(test_df, registry, step=grid_step)
