@@ -388,7 +388,11 @@ def evaluate_attack_csv(
 
     With `return_residuals=True`, a fourth element is appended: the raw
     (n_evaluated_ticks, n_signals) forecast residuals (actual - predicted),
-    for the pre-attribution residual report.
+    for the pre-attribution residual report. With `return_run=True`, a single
+    AttackRun (attribution, ground truth, tick indices, residuals, values,
+    staleness) is returned instead -- what evaluate_all needs to also score
+    the stage-1 detector on the same pass; it takes precedence over
+    `return_residuals`.
     """
     test_df = load_attack(attack_csv_path)
     test_alignment = align_to_grid(test_df, registry, step=grid_step)

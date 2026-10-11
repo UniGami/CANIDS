@@ -1,0 +1,46 @@
+registry: 20 signals | val windows: 310469 | correlation edges: 13 | extra detector-calibration streams: 0 | prep 16s
+
+=== TCN ===
+-----------
+validation: MAE=0.00671  MSE=0.000735  confidence gate trusts 5/20 signals
+  id1_sig1     bias=+0.00058  MAE=0.00169  MSE=0.000006  std=0.00244
+  id1_sig2     bias=+0.00407  MAE=0.00829  MSE=0.000280  std=0.01624
+  id10_sig1    bias=+0.00030  MAE=0.00160  MSE=0.000006  std=0.00234
+  id10_sig2    bias=+0.01029  MAE=0.05706  MSE=0.012763  std=0.11251
+  id10_sig3    bias=-0.00065  MAE=0.00447  MSE=0.000034  std=0.00581
+  id10_sig4    bias=-0.00126  MAE=0.00182  MSE=0.000007  std=0.00228
+  id2_sig1     bias=+0.00005  MAE=0.00122  MSE=0.000003  std=0.00181
+  id2_sig2     bias=+0.00086  MAE=0.00179  MSE=0.000007  std=0.00240
+  id2_sig3     bias=+0.00069  MAE=0.00130  MSE=0.000005  std=0.00203
+  id3_sig1     bias=-0.00798  MAE=0.00968  MSE=0.000251  std=0.01370
+  id3_sig2     bias=+0.00374  MAE=0.00430  MSE=0.000027  std=0.00358
+  id4_sig1     bias=+0.00265  MAE=0.00307  MSE=0.000016  std=0.00297
+  id5_sig1     bias=+0.00022  MAE=0.00168  MSE=0.000007  std=0.00264
+  id5_sig2     bias=-0.00099  MAE=0.00355  MSE=0.000021  std=0.00452
+  id6_sig1     bias=-0.00030  MAE=0.00379  MSE=0.000026  std=0.00513
+  id6_sig2     bias=+0.01062  MAE=0.01239  MSE=0.000648  std=0.02314
+  id7_sig1     bias=+0.00103  MAE=0.00173  MSE=0.000006  std=0.00212
+  id7_sig2     bias=+0.00618  MAE=0.01131  MSE=0.000580  std=0.02328
+  id8_sig1     bias=+0.00101  MAE=0.00149  MSE=0.000006  std=0.00215
+  id9_sig1     bias=+0.00011  MAE=0.00191  MSE=0.000007  std=0.00271
+detector: window=50 ticks  tau=1.962  calibrated on 51.7 min of normal traffic (1 stream(s)), 0.000 alerts/min there (target 0.1)
+
+TCN: STAGE-1 DETECTOR -- TICK-level
+-----------------------------------
+attack_type        n_gt  flagged     TP       FP     FN precision    recall        f1
+plateau           73421    84426  71102    13324   2319    0.8422    0.9684    0.9009
+
+TCN: STAGE-1 DETECTOR -- EVENT-level
+------------------------------------
+attack_type     events detected  alerts   true  false  FA/min coverage    prec strictP  recall      f1 strictF1
+plateau            116      116     150    125     25  0.3985   0.9699  0.8333  0.8267  1.0000  0.9091   0.9051
+
+TCN: attack-type labels for the detector's alerts (rows = real, columns = predicted)
+------------------------------------------------------------------------------------
+real attack         suppression          plateau            drift           replay
+plateau                       0              107                5               13
+false alarm                   0                4                7               14
+  plateau      107/125 = 0.856
+  overall, excluding flooding (Branch 2's job): 107/125 = 0.856
+
+(TCN evaluated in 145s)

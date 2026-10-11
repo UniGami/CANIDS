@@ -1,0 +1,42 @@
+data ready in 13s: 20 signals, vector_size=40, train windows=1242035, val windows=310469
+TCN: 98644 params, receptive field 61 ticks (sequence_length=50)
+epoch 1/50  train=0.006421  val=0.001655  lr=1.00e-03  480s
+epoch 2/50  train=0.000625  val=0.001338  lr=1.00e-03  481s
+epoch 3/50  train=0.000316  val=0.001269  lr=1.00e-03  501s
+epoch 4/50  train=0.000220  val=0.001206  lr=1.00e-03  454s
+epoch 5/50  train=0.000179  val=0.001268  lr=1.00e-03  433s
+epoch 6/50  train=0.000184  val=0.000982  lr=1.00e-03  416s
+epoch 7/50  train=0.000154  val=0.001054  lr=1.00e-03  467s
+epoch 8/50  train=0.000195  val=0.000735  lr=1.00e-03  740s
+epoch 9/50  train=0.000129  val=0.001052  lr=1.00e-03  796s
+epoch 10/50  train=0.000128  val=0.001017  lr=1.00e-03  762s
+epoch 11/50  train=0.000135  val=0.000836  lr=1.00e-03  681s
+epoch 12/50  train=0.000119  val=0.001271  lr=5.00e-04  787s
+epoch 13/50  train=0.000092  val=0.001012  lr=5.00e-04  770s
+saved C:\Users\sreen\CANIDS\models\tcn_syncan_train1.pt  (best val_loss=0.000735, 13 epochs)
+
+validation residual variance per signal (lower is better):
+  signal            naive        gru        tcn
+  id1_sig1       0.000000   0.000064   0.000006
+  id1_sig2       0.166650   0.000561   0.000264
+  id10_sig1      0.000003   0.000034   0.000005
+  id10_sig2      0.034294   0.031968   0.012657
+  id10_sig3      0.000001   0.000056   0.000034
+  id10_sig4      0.000002   0.000032   0.000005
+  id2_sig1       0.000001   0.000037   0.000003
+  id2_sig2       0.000000   0.000058   0.000006
+  id2_sig3       0.000001   0.000025   0.000004
+  id3_sig1       0.133319   0.000293   0.000188
+  id3_sig2       0.000001   0.000045   0.000013
+  id4_sig1       0.000007   0.000040   0.000009
+  id5_sig1       0.000002   0.000045   0.000007
+  id5_sig2       0.000000   0.000048   0.000020
+  id6_sig1       0.000003   0.000065   0.000026
+  id6_sig2       0.037037   0.021457   0.000536
+  id7_sig1       0.000001   0.000036   0.000004
+  id7_sig2       0.166636   0.000681   0.000542
+  id8_sig1       0.000001   0.000027   0.000005
+  id9_sig1       0.000002   0.000039   0.000007
+
+mean val MSE: naive=0.026898  gru=0.002831  tcn=0.000735
+confidence gate (tcn vs naive) trusts 5/20 signals

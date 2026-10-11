@@ -1,0 +1,132 @@
+registry: 20 signals | val windows: 310469 | correlation edges: 13 | extra detector-calibration streams: 0 | prep 17s
+
+=== TCN ===
+-----------
+validation: MAE=0.00671  MSE=0.000735  confidence gate trusts 5/20 signals
+  id1_sig1     bias=+0.00058  MAE=0.00169  MSE=0.000006  std=0.00244
+  id1_sig2     bias=+0.00407  MAE=0.00829  MSE=0.000280  std=0.01624
+  id10_sig1    bias=+0.00030  MAE=0.00160  MSE=0.000006  std=0.00234
+  id10_sig2    bias=+0.01029  MAE=0.05706  MSE=0.012763  std=0.11251
+  id10_sig3    bias=-0.00065  MAE=0.00447  MSE=0.000034  std=0.00581
+  id10_sig4    bias=-0.00126  MAE=0.00182  MSE=0.000007  std=0.00228
+  id2_sig1     bias=+0.00005  MAE=0.00122  MSE=0.000003  std=0.00181
+  id2_sig2     bias=+0.00086  MAE=0.00179  MSE=0.000007  std=0.00240
+  id2_sig3     bias=+0.00069  MAE=0.00130  MSE=0.000005  std=0.00203
+  id3_sig1     bias=-0.00798  MAE=0.00968  MSE=0.000251  std=0.01370
+  id3_sig2     bias=+0.00374  MAE=0.00430  MSE=0.000027  std=0.00358
+  id4_sig1     bias=+0.00265  MAE=0.00307  MSE=0.000016  std=0.00297
+  id5_sig1     bias=+0.00022  MAE=0.00168  MSE=0.000007  std=0.00264
+  id5_sig2     bias=-0.00099  MAE=0.00355  MSE=0.000021  std=0.00452
+  id6_sig1     bias=-0.00030  MAE=0.00379  MSE=0.000026  std=0.00513
+  id6_sig2     bias=+0.01062  MAE=0.01239  MSE=0.000648  std=0.02314
+  id7_sig1     bias=+0.00103  MAE=0.00173  MSE=0.000006  std=0.00212
+  id7_sig2     bias=+0.00618  MAE=0.01131  MSE=0.000580  std=0.02328
+  id8_sig1     bias=+0.00101  MAE=0.00149  MSE=0.000006  std=0.00215
+  id9_sig1     bias=+0.00011  MAE=0.00191  MSE=0.000007  std=0.00271
+detector: window=50 ticks  tau=1.962  calibrated on 51.7 min of normal traffic (1 stream(s)), 0.000 alerts/min there (target 0.1)
+
+TCN: STAGE-1 DETECTOR -- TICK-level
+-----------------------------------
+attack_type        n_gt  flagged     TP       FP     FN precision    recall        f1
+drift             60161   228194  51115   177079   9046    0.2240    0.8496    0.3545
+flooding          74104    70979  66856     4123   7248    0.9419    0.9022    0.9216
+plateau           73421    84426  71102    13324   2319    0.8422    0.9684    0.9009
+replay            59202    56143  51062     5081   8140    0.9095    0.8625    0.8854
+suppression       79714    89873  79483    10390    231    0.8844    0.9971    0.9374
+
+TCN: STAGE-1 DETECTOR -- EVENT-level
+------------------------------------
+attack_type     events detected  alerts   true  false  FA/min coverage    prec strictP  recall      f1 strictF1
+drift               96       96    2899    171   2728 41.9932   0.8453  0.0590  0.0462  1.0000  0.1114   0.0884
+flooding           118      117     159    153      6  0.0958   0.8974  0.9623  0.9560  0.9915  0.9767   0.9734
+plateau            116      116     150    125     25  0.3985   0.9699  0.8333  0.8267  1.0000  0.9091   0.9051
+replay              93       93     172    167      5  0.0768   0.8622  0.9709  0.9535  1.0000  0.9853   0.9762
+suppression        122      122     127    122      5  0.0810   0.9970  0.9606  0.9606  1.0000  0.9799   0.9799
+
+TCN: attack-type labels for the detector's alerts (rows = real, columns = predicted)
+------------------------------------------------------------------------------------
+real attack         suppression          plateau            drift           replay
+drift                         0                0              160               11
+flooding                      0              124                3               26
+plateau                       0              107                5               13
+replay                        0               18               55               94
+suppression                 122                0                0                0
+false alarm                   0               15             2518              236
+  drift        160/171 = 0.936
+  flooding     0/153 = 0.000
+  plateau      107/125 = 0.856
+  replay       94/167 = 0.563
+  suppression  122/122 = 1.000
+  overall, excluding flooding (Branch 2's job): 483/585 = 0.826
+
+(TCN evaluated in 919s)
+
+=== GRU ===
+-----------
+validation: MAE=0.01254  MSE=0.002831  confidence gate trusts 4/20 signals
+  id1_sig1     bias=+0.00127  MAE=0.00581  MSE=0.000066  std=0.00801
+  id1_sig2     bias=+0.00625  MAE=0.01379  MSE=0.000600  std=0.02368
+  id10_sig1    bias=+0.00226  MAE=0.00480  MSE=0.000039  std=0.00580
+  id10_sig2    bias=+0.01308  MAE=0.07952  MSE=0.032139  std=0.17880
+  id10_sig3    bias=-0.00189  MAE=0.00605  MSE=0.000059  std=0.00747
+  id10_sig4    bias=+0.00318  MAE=0.00514  MSE=0.000042  std=0.00566
+  id2_sig1     bias=-0.00040  MAE=0.00446  MSE=0.000037  std=0.00609
+  id2_sig2     bias=-0.00186  MAE=0.00504  MSE=0.000061  std=0.00760
+  id2_sig3     bias=+0.00528  MAE=0.00597  MSE=0.000053  std=0.00497
+  id3_sig1     bias=-0.00685  MAE=0.01218  MSE=0.000340  std=0.01713
+  id3_sig2     bias=+0.00131  MAE=0.00507  MSE=0.000046  std=0.00668
+  id4_sig1     bias=-0.00085  MAE=0.00487  MSE=0.000041  std=0.00635
+  id5_sig1     bias=+0.00551  MAE=0.00704  MSE=0.000075  std=0.00670
+  id5_sig2     bias=-0.00402  MAE=0.00615  MSE=0.000064  std=0.00692
+  id6_sig1     bias=-0.00010  MAE=0.00615  MSE=0.000065  std=0.00804
+  id6_sig2     bias=-0.02326  MAE=0.04635  MSE=0.021998  std=0.14648
+  id7_sig1     bias=-0.00011  MAE=0.00443  MSE=0.000036  std=0.00603
+  id7_sig2     bias=-0.00600  MAE=0.01377  MSE=0.000717  std=0.02609
+  id8_sig1     bias=+0.00804  MAE=0.00844  MSE=0.000091  std=0.00517
+  id9_sig1     bias=+0.00393  MAE=0.00585  MSE=0.000055  std=0.00628
+detector: window=50 ticks  tau=1.658  calibrated on 51.7 min of normal traffic (1 stream(s)), 0.058 alerts/min there (target 0.1)
+
+GRU: STAGE-1 DETECTOR -- TICK-level
+-----------------------------------
+attack_type        n_gt  flagged     TP       FP     FN precision    recall        f1
+drift             60161   124785  39609    85176  20552    0.3174    0.6584    0.4283
+flooding          74104    70619  66322     4297   7782    0.9392    0.8950    0.9165
+plateau           73421    77298  67905     9393   5516    0.8785    0.9249    0.9011
+replay            59202    51195  45738     5457  13464    0.8934    0.7726    0.8286
+suppression       79714    88068  79483     8585    231    0.9025    0.9971    0.9475
+
+GRU: STAGE-1 DETECTOR -- EVENT-level
+------------------------------------
+attack_type     events detected  alerts   true  false  FA/min coverage    prec strictP  recall      f1 strictF1
+drift               96       92     586    141    445  6.8501   0.6595  0.2406  0.2150  0.9583  0.3847   0.3512
+flooding           118      113     156    147      9  0.1437   0.8887  0.9423  0.9359  0.9576  0.9499   0.9466
+plateau            116      112     163    118     45  0.7172   0.9278  0.7239  0.7178  0.9655  0.8274   0.8234
+replay              93       92     160    152      8  0.1229   0.7714  0.9500  0.9375  0.9892  0.9692   0.9627
+suppression        122      122     133    122     11  0.1782   0.9970  0.9173  0.9173  1.0000  0.9569   0.9569
+
+GRU: attack-type labels for the detector's alerts (rows = real, columns = predicted)
+------------------------------------------------------------------------------------
+real attack         suppression          plateau            drift           replay
+drift                         0                1              134                6
+flooding                      0              114               11               22
+plateau                       0              103                5               10
+replay                        0               16               47               89
+suppression                 122                0                0                0
+false alarm                   0               16              396              106
+  drift        134/141 = 0.950
+  flooding     0/147 = 0.000
+  plateau      103/118 = 0.873
+  replay       89/152 = 0.586
+  suppression  122/122 = 1.000
+  overall, excluding flooding (Branch 2's job): 448/533 = 0.841
+
+(GRU evaluated in 376s)
+
+SIDE-BY-SIDE: stage-1 detector, EVENT-level (strict F1 / recall / false alarms per minute)
+------------------------------------------------------------------------------------------
+attack_type      TCN sF1   TCN rec  TCN FA/m   GRU sF1   GRU rec  GRU FA/m
+drift             0.0884    1.0000   41.9932    0.3512    0.9583    6.8501
+flooding          0.9734    0.9915    0.0958    0.9466    0.9576    0.1437
+plateau           0.9051    1.0000    0.3985    0.8234    0.9655    0.7172
+replay            0.9762    1.0000    0.0768    0.9627    0.9892    0.1229
+suppression       0.9799    1.0000    0.0810    0.9569    1.0000    0.1782

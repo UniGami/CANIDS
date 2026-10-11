@@ -207,6 +207,15 @@ GRU_NUM_LAYERS = 1
 TRAINING_EPOCHS = 50
 BATCH_SIZE = 64
 LEARNING_RATE = 1e-3
+# TCN (models/tcn.py). kernel 3 with dilations 1,2,4,8 and two convs per
+# block gives a 61-tick receptive field, covering SEQUENCE_LENGTH=50.
+TCN_CHANNELS = 64  # matches GRU_HIDDEN_SIZE
+TCN_KERNEL_SIZE = 3
+TCN_DILATIONS = (1, 2, 4, 8)
+TCN_DROPOUT = 0.1
+TCN_WEIGHT_DECAY = 1e-5
+TCN_GRAD_CLIP = 1.0
+TCN_LR_PATIENCE = 3  # ReduceLROnPlateau patience (epochs)
 # Per-signal confidence gating (see models/naive.confidence_gate): a model's
 # residual variance must be below this fraction of naive persistence's
 # residual variance on the same signal to count as "meaningfully better."
