@@ -46,7 +46,7 @@ from canids.data.staleness import compute_staleness
 from canids.data.synthetic import load_attack_window
 from canids.data.windowing import build_joint_vector, valid_forecast_ticks
 from canids.models.gru_seq2seq import GRUForecaster, predict_streaming
-from canids.models.isolation_forest import Branch2Model, Branch2Output, detect_branch2
+from canids.models.rate_limits import Branch2Model, Branch2Output, detect_branch2
 from canids.registry import Registry
 from canids.runs import merge_runs, runs
 

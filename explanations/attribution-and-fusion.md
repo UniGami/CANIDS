@@ -135,4 +135,4 @@ This is the top-level function everything else calls: it runs all four checks in
 ## `src/canids/fusion.py`
 
 ### Overview
-This file is a placeholder — it currently does nothing but raise an error. Its intended job, once built, is simple: combine the verdict from this attribution layer (Branch 1) with the verdict from the not-yet-built Isolation Forest detector (Branch 2, see `models.md`) using an "OR" rule — if *either* branch says something looks like an attack, the combined system flags it as an attack. Right now, since Branch 2 doesn't exist yet, the system effectively only ever uses Branch 1's verdict on its own.
+This file combines the verdict of Branch 1 (the windowed detector, `detector.py`; the rule layer described above is now the legacy baseline) with the verdict of Branch 2 (message-rate limits, see `models.md`) using an "OR" rule — if *either* branch says something looks like an attack, the combined system flags it. Branch 2's "too many messages" and "values out of range" evidence is carried along so `classify.py` can name flooding and fuzzing. See `docs/12-branch2.md`.

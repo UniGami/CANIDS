@@ -27,7 +27,7 @@ row of every ID inside an attack interval gets Label=1, as in SynCAN):
                   fuzzing file; this is the only test of that label)
 
 Three more are built to slip UNDER Branch 2's plausibility limits (see
-models/isolation_forest.py), to test whether its Isolation Forest adds anything:
+models/rate_limits.py) and probe where they stop working:
   flooding_mild   extra frames at 1.2-1.45x the ID's normal rate, interleaved at the
                   midpoint between genuine frames with interpolated values: the count
                   stays under the count limit and the gaps stay near half a period

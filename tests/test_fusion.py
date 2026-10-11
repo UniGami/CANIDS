@@ -13,7 +13,7 @@ from canids.classify import (
 )
 from canids.detector import DetectorCalibration, DetectorOutput
 from canids.fusion import fuse
-from canids.models.isolation_forest import Branch2Output
+from canids.models.rate_limits import Branch2Output
 
 TAU = 2.0
 CAL = DetectorCalibration(
@@ -32,15 +32,15 @@ def _b1(n=1000, **spans):
     )
 
 
-def _b2(n=1000, rate=None, oor=None, forest=None):
+def _b2(n=1000, rate=None, oor=None):
     def mask(span):
         m = np.zeros(n, dtype=bool)
         if span:
             m[span[0] : span[1]] = True
         return m
 
-    r, o, f = mask(rate), mask(oor), mask(forest)
-    return Branch2Output(score=np.zeros(n), flags=r | o | f, forest_flags=f, rate_high=r, oor_high=o)
+    r, o = mask(rate), mask(oor)
+    return Branch2Output(flags=r | o, rate_high=r, oor_high=o)
 
 
 def test_fuse_ors_the_two_branches_flags():
@@ -75,8 +75,6 @@ def test_out_of_range_values_make_an_alert_fuzzing():
 def test_an_alert_with_no_branch2_message_evidence_keeps_branch1s_label():
     sup = fuse(_b1(stale=(300, 400)), _b2(), np.arange(1000))
     assert classify_fused_alerts(sup, CAL)[0].label == SUPPRESSION
-    forest_only = fuse(_b1(), _b2(forest=(300, 400)), np.arange(1000))  # forest alert, no rate/range evidence
-    assert classify_fused_alerts(forest_only, CAL)[0].label == REPLAY  # Branch 1's default for a residual-less alert
 
 
 def test_a_sliver_of_flood_evidence_inside_a_long_branch1_alert_does_not_relabel_it():

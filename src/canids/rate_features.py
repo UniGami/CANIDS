@@ -6,7 +6,6 @@ For every CAN ID, over the trailing `window` ticks (0.5 s by default):
   count     how many frames of that ID arrived
   min_gap   the shortest time between two consecutive frames of that ID, in seconds
             (the full window length if fewer than two arrived)
-  dup_frac  the share of frames whose payload is identical to the ID's previous frame
 plus one global feature:
   oor       how many frames in the window carry a value outside that signal's normal
             range (plus a margin) -- the fuzzing signature.
@@ -27,7 +26,7 @@ import pandas as pd
 from canids.config import GRID_STEP_SECONDS, RATE_WINDOW_TICKS
 
 SIGNAL_COLUMNS = ["Signal1_of_ID", "Signal2_of_ID", "Signal3_of_ID", "Signal4_of_ID"]
-PER_ID_FEATURES = ("count", "min_gap", "dup_frac")
+PER_ID_FEATURES = ("count", "min_gap")
 
 
 @dataclass
@@ -68,7 +67,7 @@ def tick_rate_features(
     step: float = GRID_STEP_SECONDS,
     window: int = RATE_WINDOW_TICKS,
 ) -> np.ndarray:
-    """(n_ticks, 3 * len(id_names) + 1) feature matrix, columns ordered as feature_names(id_names).
+    """(n_ticks, 2 * len(id_names) + 1) feature matrix, columns ordered as feature_names(id_names).
     `df` must be time-sorted (load_csv / load_normal / load_attack return it that way).
     IDs in `df` that are not in `id_names` are ignored; IDs in `id_names` that never appear get
     count 0 and min_gap = the window length.
@@ -81,20 +80,16 @@ def tick_rate_features(
     ids = df["ID"].astype(str).to_numpy()
     sig = df[SIGNAL_COLUMNS].to_numpy(dtype=float)
 
-    out = np.zeros((n_ticks, 3 * len(id_names) + 1))
+    out = np.zeros((n_ticks, 2 * len(id_names) + 1))
     oor_frames = np.zeros(n_ticks)
     for k, id_ in enumerate(id_names):
         rows = np.flatnonzero(ids == id_)
-        base = 3 * k
+        base = 2 * k
         if len(rows) == 0:
             out[:, base + 1] = window_seconds
             continue
         tk, t, v = tick[rows], times[rows], sig[rows]
         count = np.bincount(tk, minlength=n_ticks).astype(np.float64)
-
-        same = np.zeros(len(rows), dtype=bool)  # payload identical to the previous frame of this ID
-        same[1:] = ((v[1:] == v[:-1]) | (np.isnan(v[1:]) & np.isnan(v[:-1]))).all(axis=1)
-        dup = np.bincount(tk, weights=same, minlength=n_ticks)
 
         gap = np.full(len(rows), np.inf)
         gap[1:] = np.diff(t)
@@ -111,6 +106,5 @@ def tick_rate_features(
         count_w = _trailing_sum(count, window)
         out[:, base] = count_w
         out[:, base + 1] = np.where(np.isfinite(min_gap), min_gap, window_seconds)
-        out[:, base + 2] = _trailing_sum(dup, window) / np.maximum(count_w, 1.0)
     out[:, -1] = _trailing_sum(oor_frames, window)
     return out

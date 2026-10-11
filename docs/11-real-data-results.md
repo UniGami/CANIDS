@@ -1,6 +1,6 @@
 # Real SynCAN results: tick-level, event-level and attack-type labels
 
-> **Snapshot of Branch 1 only** (before Branch 2). For the fused Branch 1 OR Branch 2 results, including a real
+> **Snapshot of Branch 1 only** (before Branch 2 and before the partner-consistency channel, `13-partner-channel.md`). For the fused Branch 1 OR Branch 2 results, including a real
 > label for flooding (118/118) and the overall 587/627 type accuracy, see `12-branch2.md`.
 
 All numbers below are from ONE end-to-end run of `scripts/run_evaluation.py` on the five
@@ -98,7 +98,7 @@ Rows = what really happened, columns = what the labeller said (alerts that overl
   after evidence has built up over its 0.5 s window and the ramp has grown, so the start of every
   drift is missed. It does not affect event-level recall.
 - **Flooding** is detected well, but has no type label of its own; 138 of its 158 alerts are called
-  plateau (the flooded signal looks stuck). Branch 2 (Isolation Forest, rate features) is meant to
+  plateau (the flooded signal looks stuck). Branch 2 (message-rate limits, now built: `12-branch2.md`) takes over to
   own it.
 
 ## Caveats (please quote with the numbers)

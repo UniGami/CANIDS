@@ -1,6 +1,6 @@
 # Forecasting Models (Branch 1) and Branch 2
 
-This file covers the models that try to predict "what should the vehicle's signals look like right now, based on the recent past" — the naive baseline sanity-check (`models/naive.py`), the actual working model (`models/gru_seq2seq.py`), the planned-but-not-yet-built upgrade to it (`models/tcn.py`), and the planned-but-not-yet-built second, independent detector (`models/isolation_forest.py`).
+This file covers the models that try to predict "what should the vehicle's signals look like right now, based on the recent past" — the naive baseline sanity-check (`models/naive.py`), the actual working model (`models/gru_seq2seq.py`), the planned-but-not-yet-built upgrade to it (`models/tcn.py`), and the second, independent detector (`models/rate_limits.py`, message-rate / plausibility limits; it started as an Isolation Forest, see `docs/12-branch2.md`).
 
 The core idea behind all of "Branch 1" (naive, GRU, TCN): if you can accurately predict what a signal *should* be doing right now based on its recent history, then a big gap between "predicted" and "actual" (called the **residual**) is suspicious — it means something happened that the model, having learned only normal driving patterns, didn't expect. None of these models are ever trained on attack data — they only ever learn what "normal" looks like, and treat any large mismatch with reality as a candidate anomaly.
 
@@ -139,7 +139,7 @@ This file is a placeholder — it doesn't do anything yet. It currently just rai
 
 ---
 
-## `src/canids/models/isolation_forest.py`
+## `src/canids/models/rate_limits.py`
 
 ### Overview
-Also a placeholder, not yet implemented. This is meant to become "Branch 2" of the system — a separate, independent detector that doesn't try to forecast values at all, but instead looks at things like how often each CAN ID is transmitting and whether values fall within a plausible range, to catch attacks that are more about *volume or timing* than about *value drift* (e.g. flooding the bus with extra messages, or fuzzing — sending wildly implausible values). It's meant to run alongside the GRU/TCN branch, not depend on it.
+This is "Branch 2" of the system — a separate, independent detector that doesn't try to forecast values at all. It looks at the raw messages: how many arrive from each CAN ID in the last half second, how close together they are, and whether the values are plausible (inside the range normal driving ever shows). If an ID sends more messages than it ever does in normal driving, or two arrive closer together than they ever do, that's flooding; values outside the normal range are fuzzing. Every limit comes from normal data only. It was first built as an Isolation Forest plus these limits, but testing showed the forest found no attack the limits missed (and added false alarms), so it was dropped — see `docs/12-branch2.md`. It runs alongside the GRU/TCN branch and does not depend on it.

@@ -18,6 +18,11 @@ Usage:
     python scripts/run_evaluation.py \
         --normal-csv data/raw/syncan_train_1.csv --attack-source syncan \
         --model-path models/gru_syncan.pt --batch-size 1024
+    python scripts/run_evaluation.py --attack-source syncan --normal-csv data/raw/syncan_train_1.csv \
+        --model-path models/gru_syncan_train1.pt --batch-size 1024 --skip-residual-report --summary-only
+
+--summary-only runs the same evaluation but prints only the FINAL SUMMARY at the end (per-attack
+confusion counts, event-level results, the attack-type confusion matrix, overall accuracy).
 
 --model-path both loads a previously-trained model if the path exists, and
 saves a freshly-trained one there if it doesn't -- real-data training takes
@@ -28,6 +33,8 @@ evaluation runs shouldn't have to retrain from scratch every time.
 from __future__ import annotations
 
 import argparse
+import io
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -36,7 +43,6 @@ from canids.calibration import calibrate
 from canids.config import (
     CUSUM_ADAPTIVE_DECAY,
     DEFAULT_CALIBRATION_PERCENTILE,
-    BRANCH2_TARGET_ALERTS_PER_MINUTE,
     DETECTOR_TARGET_ALERTS_PER_MINUTE,
     RATE_WINDOW_TICKS,
     DETECTOR_WINDOW_TICKS,
@@ -66,7 +72,9 @@ from canids.detector import NormalStream, fit_detector
 from canids.evaluate import evaluate_all, evaluate_attack_csv, normal_stream_from_df, per_signal_residual_stats
 from canids.models import naive
 from canids.models.gru_seq2seq import GRUForecaster, load_model, predict_streaming, save_model, train_streaming
-from canids.models.isolation_forest import Branch2Model, fit_branch2
+from canids.models.rate_limits import Branch2Model, fit_branch2
+from canids.relational import RelationalModel, fit_relational_from_frames
+from canids.report import format_final_summary
 from canids.registry import build_registry
 
 
@@ -168,14 +176,27 @@ def main() -> None:
     )
     parser.add_argument(
         "--skip-branch2", action="store_true",
-        help="skip Branch 2 (Isolation Forest over message rates) and the fused Branch 1 OR Branch 2 verdict",
+        help="skip Branch 2 (message-rate / plausibility limits) and the fused Branch 1 OR Branch 2 verdict",
     )
     parser.add_argument(
-        "--branch2-model-path", type=Path, default=Path("models") / "isolation_forest_syncan_train1.joblib",
-        help="load a previously fitted Branch 2 model from here if it exists; otherwise fit on the normal CSV's "
-        "training part (calibrating on its validation part and the detector's extra normal CSVs) and save it here",
+        "--branch2-model-path", type=Path, default=Path("models") / "branch2_limits_syncan_train1.json",
+        help="load previously fitted Branch 2 limits from here if the file exists; otherwise fit them on the normal CSV's "
+        "training part (plus its validation part and the detector's extra normal CSVs) and save them here",
     )
-    parser.add_argument("--branch2-target-alerts-per-min", type=float, default=BRANCH2_TARGET_ALERTS_PER_MINUTE)
+    parser.add_argument(
+        "--summary-only", action="store_true",
+        help="print only the FINAL SUMMARY (confusion counts, event results, attack-type matrix, overall accuracy); "
+        "the detailed tables are not shown",
+    )
+    parser.add_argument(
+        "--skip-partner", action="store_true",
+        help="do not use the partner-consistency evidence channel (relational.py) in the Branch 1 detector",
+    )
+    parser.add_argument(
+        "--relational-model-path", type=Path, default=Path("models") / "relational_syncan_train1.json",
+        help="load a previously fitted partner-consistency model from here if it exists; otherwise fit it on the normal "
+        "CSV's training part (selecting signals on its validation part and the detector's extra normal CSVs) and save it",
+    )
     parser.add_argument("--detector-window", type=int, default=DETECTOR_WINDOW_TICKS)
     parser.add_argument(
         "--detector-target-alerts-per-min", type=float, default=DETECTOR_TARGET_ALERTS_PER_MINUTE,
@@ -203,6 +224,10 @@ def main() -> None:
         "predict_streaming pass per attack type",
     )
     args = parser.parse_args()
+    real_stdout = sys.stdout
+    if args.summary_only:
+        print("running the full evaluation (about 12 minutes); only the final summary will be printed...", flush=True)
+        sys.stdout = io.StringIO()  # swallow every detailed table; errors still reach the terminal on stderr
 
     registry = build_registry([args.normal_csv])
     print(f"registry: {registry.n_signals} signals, vector_size={registry.vector_size}")
@@ -300,9 +325,22 @@ def main() -> None:
                     model, registry, load_normal(path), args.sequence_length, args.batch_size, args.grid_step
                 )
             )
+        relational = None
+        if not args.skip_partner:
+            if args.relational_model_path.exists():
+                print(f"loading partner-consistency model from {args.relational_model_path}")
+                relational = RelationalModel.load(args.relational_model_path)
+            else:
+                relational = fit_relational_from_frames(
+                    train_df, [val_df, *[load_normal(path) for path in extra]], registry, args.grid_step
+                )
+                relational.save(args.relational_model_path)
+                print(f"saved partner-consistency model to {args.relational_model_path}")
+            print(f"partner channel: {len(relational.signals)} signals with a tight cross-ID relation")
         detector = fit_detector(
             streams, window=args.detector_window,
             target_alerts_per_minute=args.detector_target_alerts_per_min, step=args.grid_step,
+            relational=relational,
         )
         print(
             f"detector: window={detector.window} ticks  tau={detector.tau:.3f}  calibrated on "
@@ -322,16 +360,11 @@ def main() -> None:
                 default_extra = RAW_DATA_DIR / "syncan_train_2.csv"
                 extra_b2 = [default_extra] if args.attack_source == "syncan" and default_extra.exists() and default_extra != args.normal_csv else []
             branch2 = fit_branch2(
-                train_df, [val_df, *[load_normal(path) for path in extra_b2]],
-                target_alerts_per_minute=args.branch2_target_alerts_per_min, window=RATE_WINDOW_TICKS, step=args.grid_step,
+                train_df, [val_df, *[load_normal(path) for path in extra_b2]], window=RATE_WINDOW_TICKS, step=args.grid_step,
             )
             branch2.save(args.branch2_model_path)
             print(f"saved Branch 2 model to {args.branch2_model_path}")
-        print(
-            f"Branch 2: {len(branch2.id_names)} IDs, window={branch2.window} ticks, forest tau={branch2.tau:.4f}, "
-            f"calibrated on {branch2.calibration_minutes:.1f} min of normal traffic "
-            f"({branch2.calibration_alerts_per_minute:.3f} forest alerts/min there)"
-        )
+        print(f"Branch 2: {len(branch2.id_names)} IDs, window={branch2.window} ticks, limits from normal traffic")
 
     result = evaluate_all(
         model, registry, calibration, correlation, attack_csvs, confidence_mask=confidence_mask,
@@ -365,7 +398,7 @@ def main() -> None:
         _print_event_table(result.detector_event_metrics)
 
         if branch2 is not None:
-            _print_header("BRANCH 2 ALONE (Isolation Forest + plausibility limits) -- TICK-level")
+            _print_header("BRANCH 2 ALONE (message-rate / plausibility limits) -- TICK-level")
             _print_tick_table(result.branch2_metrics)
             _print_header("BRANCH 2 ALONE -- EVENT-level")
             _print_event_table(result.branch2_event_metrics)
@@ -418,6 +451,21 @@ def main() -> None:
                     f"    percentile={percentile:5.1f}  precision={_fmt_metric(m.precision)}  "
                     f"recall={_fmt_metric(m.recall)}  f1={_fmt_metric(m.f1)}  flagged={m.n_flagged}"
                 )
+
+    sys.stdout = real_stdout
+    # the very last thing printed: one screen with every attack's confusion counts, event results and the type matrix
+    if detector is not None:
+        fused_verdict = branch2 is not None
+        outputs = result.fused_outputs if fused_verdict else result.detector_outputs
+        print()
+        print(
+            format_final_summary(
+                result.fused_metrics if fused_verdict else result.detector_metrics,
+                result.fused_event_metrics if fused_verdict else result.detector_event_metrics,
+                type_confusion(outputs, result.ground_truths, detector),
+                "real SynCAN attack files, " + ("Branch 1 OR Branch 2 (fused)" if fused_verdict else "Branch 1 only"),
+            )
+        )
 
 
 if __name__ == "__main__":

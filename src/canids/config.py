@@ -167,12 +167,18 @@ SMOOTH_MIN_CHANGE = 0.02
 # many ticks PAST its end for smooth movement: one full window, a principled value rather than a tuned one.
 SMOOTH_LOOKAHEAD_TICKS = 6 * SMOOTH_LAG_TICKS
 
-# Branch 2 (rate_features.py, models/isolation_forest.py): message-rate / plausibility features are measured over
-# the trailing RATE_WINDOW_TICKS ticks (0.5 s, the same length as the stage-1 detector window), so both branches
-# talk about the same stretch of time. The Isolation Forest's alert threshold uses the same false-alarm budget
-# idea as the detector (BRANCH2_TARGET_ALERTS_PER_MINUTE).
+# Branch 2 (rate_features.py, models/rate_limits.py): message-rate / plausibility features are measured over the
+# trailing RATE_WINDOW_TICKS ticks (0.5 s, the same length as the stage-1 detector window), so both branches talk
+# about the same stretch of time.
 RATE_WINDOW_TICKS = 50
-BRANCH2_TARGET_ALERTS_PER_MINUTE = 0.1
+
+# Partner-consistency channel (relational.py, detector.py): each signal is regressed on its cross-ID partners'
+# values now AND RELATIONAL_LAG_TICKS ticks earlier (absorbs short delays between the signals). Lag 0 doubled the
+# false alarms on held-out normal driving (0.12 -> 0.24 per minute, mostly from one signal, id10_sig4); lag 10
+# brought them back to 0.13 while keeping nearly all of the recall gain (docs/13-partner-channel.md).
+# RELATIONAL_MIN_R2: a signal is kept only if the relation holds this well on normal data the fit never saw.
+RELATIONAL_LAG_TICKS = 10
+RELATIONAL_MIN_R2 = 0.95
 
 # Normal-value-range gate for drift/plateau (attribution/rules.py's
 # _in_normal_value_range, calibration.calibrate_value_range): a signal's

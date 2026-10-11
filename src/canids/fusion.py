@@ -1,7 +1,6 @@
 """Rule-based OR fusion of the two branches: a tick is flagged if EITHER Branch 1
-(the windowed forecast-residual detector, detector.py) OR Branch 2 (the Isolation
-Forest + plausibility limits over message rates, models/isolation_forest.py)
-flags it. Branch 2's evidence of "too many messages" / "out-of-range values" is
+(the windowed forecast-residual detector, detector.py) OR Branch 2 (the message-rate
+and plausibility limits, models/rate_limits.py) flags it. Branch 2's evidence of "too many messages" / "out-of-range values" is
 carried along so the labeller (classify.py) can name flooding and fuzzing.
 
 Branch 1 only looks at the ticks that have a full forecast window
@@ -16,7 +15,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 from canids.detector import DetectorOutput
-from canids.models.isolation_forest import Branch2Output
+from canids.models.rate_limits import Branch2Output
 
 
 @dataclass

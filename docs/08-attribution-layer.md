@@ -250,10 +250,11 @@ Branch 1's forecasting (Step 7), calibration (Step 8), and attribution
 (Step 9) are now a complete chain from raw residuals to a labeled call per
 signal. Step 10 swaps the reported model from GRU to TCN (same
 input/output contract, so nothing here changes) and re-runs calibration
-against its residuals. Step 11 (Isolation Forest) is independent of all of
-this — Branch 2 entirely. Step 12 (fusion) combines Branch 1's
-attribution-informed residual flag with Branch 2's Isolation Forest flag via
-rule-based OR. Step 13 (evaluation) is where `fired_rules()` actually
+against its residuals. Step 11 (Branch 2) is independent of all of
+this. Step 12 (fusion) combines Branch 1's flag with Branch 2's flag via
+rule-based OR. (Later work replaced this layer's verdict with the windowed detector and
+`classify.py` — see `10-detector.md`; this layer is kept as the "LEGACY" baseline. Branch 2
+started as an Isolation Forest and became message-rate limits — see `12-branch2.md`.) Step 13 (evaluation) is where `fired_rules()` actually
 becomes the rule-collision confusion matrix, and where plateau/drift/replay
 get measured against real synthetic (and eventually real SynCAN) attack
 CSVs end-to-end.

@@ -2,6 +2,13 @@
 
 ## Context
 
+> **Status note (2026-10-11):** this file started as the bootstrap plan and is now the live roadmap. Everything
+> below up to Step 13 is built except Step 10 (TCN, in progress by a teammate on the `tcn` branch). Work that was
+> NOT in the original plan (the windowed detector and attack-type labeller, practice-attack tests, the partner-
+> consistency channel, the final summary report) is listed as Steps 14-17. Branch 2 was built as an Isolation
+> Forest, tested, and **dropped** in favour of message-rate / plausibility limits (Step 11, `docs/12-branch2.md`).
+> The paragraphs below are the original text, kept for history.
+
 The project is fully specified in [claude.md](claude.md) (architecture, dataset
 schema, attribution rules, preprocessing steps) but **no code exists yet** — the
 working directory currently contains only `claude.md`. Review 1 (slides) is
@@ -63,20 +70,33 @@ each step lands.
 - [x] Step 7 — Branch 1 baseline model chain
 - [x] Step 8 — Threshold calibration (`calibration.py`)
 - [x] Step 9 — Attribution layer (`attribution/rules.py`)
-- [ ] Step 10 — TCN final model (`models/tcn.py`)
-- [ ] Step 11 — Branch 2: Isolation Forest (`models/isolation_forest.py`)
-- [ ] Step 12 — Fusion (`fusion.py`)
+- [ ] Step 10 — TCN final model (`models/tcn.py`) -- teammate, `tcn` branch, not merged;
+      after the merge every check below must be rerun on the TCN's residuals
+- [x] Step 11 — Branch 2: message-rate / plausibility limits (`models/rate_limits.py`,
+      `rate_features.py`). Originally "Isolation Forest": built, tested, found to add no
+      detection beyond the limits, and dropped (docs/12-branch2.md)
+- [x] Step 12 — Fusion (`fusion.py`), Branch 1 OR Branch 2, with flooding/fuzzing labels
 - [x] Step 13 — Evaluation & reporting (`evaluate.py`) -- landed out of
       order, ahead of Steps 10-12, prompted by a real-data false-positive
       finding that needed proper per-attack-type/confusion-matrix tooling
       to diagnose (see docs/notes-real-data-scaling.md)
+- [x] Step 14 — Windowed detector + attack-type labeller (`detector.py`, `classify.py`,
+      `runs.py`): one calibrated score instead of the OR of per-signal rules (docs/10-detector.md)
+- [x] Step 15 — Stricter evaluation: event-level metrics, first/second-half checks, practice attacks
+      built from held-out normal data (`evaluate.event_metrics`, `data/inject.py`,
+      `scripts/*_check.py`, `scripts/build_injected_attacks.py`) (docs/10, 11, 12)
+- [x] Step 16 — Partner-consistency evidence channel (`relational.py`): drift tick recall
+      0.565 -> 0.737 (docs/13-partner-channel.md)
+- [x] Step 17 — Final summary report (`report.py`, `run_evaluation.py --summary-only`)
+- [ ] Remaining: TCN merge + re-evaluation (Step 10); known gaps listed in CLAUDE.md
 
 ## Step 1 — Repo & environment setup
 - `git init` in `c:\Users\sreen\CANIDS` (currently not a git repo) and add a
   `.gitignore` (Python artifacts, `data/raw/`, `data/processed/`, venv/conda
   dirs, `__pycache__`).
-- `requirements.txt`: numpy, pandas, torch, scikit-learn (Isolation Forest),
-  pyyaml (config), pytest (tests), matplotlib (reporting plots).
+- `requirements.txt`: numpy, pandas, torch, pyyaml (config), pytest (tests), matplotlib
+  (reporting plots). (scikit-learn was listed for the Isolation Forest and removed when the
+  forest was dropped.)
 - `environment.yml`: minimal conda env (python=3.11 + pip) that pip-installs
   from `requirements.txt`, so the teammate can ignore conda entirely and just
   `pip install -r requirements.txt` in their own venv.
@@ -104,10 +124,17 @@ CANIDS/
       naive.py              # naive persistence forecaster (internal-only sanity check)
       gru_seq2seq.py         # Branch 1 baseline
       tcn.py                  # Branch 1 final
-      isolation_forest.py      # Branch 2
+      rate_limits.py           # Branch 2 (message-rate / plausibility limits)
     attribution/
       rules.py               # suppression -> plateau -> drift -> replay, in priority order
     fusion.py               # rule-based OR
+    detector.py             # windowed detector: one calibrated score per tick (Step 14)
+    classify.py             # attack-type labels for the detector's alerts (Step 14)
+    relational.py           # partner-consistency model + evidence channel (Step 16)
+    rate_features.py        # Branch 2 message-rate features from raw frames
+    report.py               # final summary printed by run_evaluation.py (Step 17)
+    runs.py                 # run-length helpers shared by detector and evaluation
+    data/inject.py          # practice attacks from normal data (Step 15)
     evaluate.py             # per-attack-type metrics, correlation-analysis reporting
   scripts/                # thin CLI entry points calling into src/canids
   tests/                  # pytest, one file per module above
@@ -220,16 +247,19 @@ on the same normal-only windows. Re-run calibration (Step 8) against TCN
 residuals once it's the reported model — GRU stays in the repo as the
 baseline comparison point, not deleted.
 
-## Step 11 — Branch 2: Isolation Forest (`models/isolation_forest.py`)
-Independent of Branch 1 — can be built in parallel by a teammate once Step 5
-(preprocessing plumbing) lands. Lightweight rate/plausibility features per
-window (e.g. inter-arrival rate per ID, out-of-range value counts), fit
-Isolation Forest on normal-only data.
+## Step 11 — Branch 2: message-rate / plausibility limits (`models/rate_limits.py`)
+DONE. Per 0.5 s window and per ID: frame count, shortest gap, plus an out-of-range
+value count (`rate_features.py`); the limits are the most extreme values normal data
+shows, widened by a margin (`rate_limits.py`, `scripts/fit_branch2.py`). The original plan
+was an Isolation Forest over these features. It was built, tested against a rule fixed
+beforehand (does it find attacks the limits miss?) and dropped on 2026-10-11: it found
+none, cannot flag values beyond its training range, and added false alarms. Real flooding:
+118/118 found, 0 false alarms. See `docs/12-branch2.md` for the full evidence.
 
 ## Step 12 — Fusion (`fusion.py`)
-Rule-based OR: flag a window if either branch flags it. Simple combinator
-over Branch 1 (forecast residual + attribution) and Branch 2 (Isolation
-Forest) outputs.
+DONE. Rule-based OR: a tick is flagged if Branch 1 (the windowed detector) or Branch 2
+(the limits) flags it; Branch 2's flooding / fuzzing evidence is carried along so
+`classify.classify_fused_alerts` can name those two attack types.
 
 ## Step 13 — Evaluation & reporting (`evaluate.py`)
 Per-attack-type metrics (precision/recall/F1 or similar) on each attack CSV,
@@ -246,6 +276,27 @@ independent detector.
   the calibration percentile sweep from Step 8, so the write-up can show how
   sensitive results are to the chosen threshold.
 
+## Step 14 — Windowed detector + attack-type labeller
+`detector.py`: score = max over signals and four evidence channels (residual running mean,
+staleness, frozen run, partner mismatch), each scaled by normal data, one threshold set so
+normal traffic raises ~0.1 alerts/min. `classify.py`: plain rules name each alert
+(flooding/fuzzing from Branch 2, then suppression, plateau, drift = smooth one-way movement,
+else replay). Replaces the OR-of-rules verdict (kept as the "LEGACY" tables). docs/10.
+
+## Step 15 — Stricter evaluation
+Event-level metrics with strict precision (`evaluate.event_metrics`), first-half / second-half
+checks, and practice attacks injected into held-out normal data in NEW files
+(`data/inject.py`; the raw dataset is never modified). docs/10, 11, 12.
+
+## Step 16 — Partner-consistency channel
+`relational.py`: signals vs what their cross-ID partners imply (ridge regression on the
+partners' values now and 10 ticks earlier, selected on held-out normal data). On by default.
+docs/13-partner-channel.md.
+
+## Step 17 — Final summary report
+`report.py` + `scripts/run_evaluation.py` (`--summary-only`): per-attack TP/FP/TN/FN,
+event-level results, attack-type confusion matrix and overall accuracy.
+
 ## Testing strategy
 `pytest` unit tests per module under `tests/`, each run against the Step 4
 synthetic data: registry correctness, grid alignment/forward-fill, staleness
@@ -259,7 +310,7 @@ test per attribution rule against its matching synthetic attack type.
 - `pytest` passes across all modules listed above, run against synthetic
   data end-to-end (generator → registry → grid → staleness → windowing →
   correlation → naive/GRU baseline → calibration → attribution rules →
-  Isolation Forest → fusion → evaluate) with no attack rows leaking into
+  Branch 2 limits → fusion → evaluate) with no attack rows leaking into
   train/val.
 - Manually inspect that naive persistence is never surfaced by
   `evaluate.py`'s reported output (internal-only, per claude.md).

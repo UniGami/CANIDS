@@ -15,6 +15,9 @@ normal traffic ever gets":
             single-tick residuals, only their running mean.
   stale  -- ticks since the signal's last genuine transmission (suppression).
   frozen -- length of the current run of bit-identical values (plateau).
+  partner -- (optional, needs a relational.RelationalModel) |trailing mean of how far the
+            signal is from what its partners on OTHER IDs imply|. A drift ramp or a replay
+            breaks that relation from its first ticks, long before forecast residuals build up.
 
 The tick's score is the max over all signals and channels. A single threshold
 `tau` is then chosen so that the score's ALERT rate on held-out normal data is
@@ -33,6 +36,7 @@ from typing import Sequence
 import numpy as np
 
 from canids.attribution.rules import frozen_streak_length
+from canids.relational import RelationalModel
 from canids.runs import merge_runs, runs
 from canids.config import (
     DETECTOR_FROZEN_PERCENTILE,
@@ -48,7 +52,7 @@ from canids.config import (
     SMOOTH_MIN_CHANGE,
 )
 
-CHANNELS = ("signed", "stale", "frozen")
+CHANNELS = ("signed", "stale", "frozen")  # always on; "partner" is added when a RelationalModel is supplied
 
 
 @dataclass
@@ -122,19 +126,28 @@ def rolling_mean(x: np.ndarray, window: int) -> np.ndarray:
 
 
 def evidence_channels(
-    residuals: np.ndarray, staleness: np.ndarray, values: np.ndarray, window: int
+    residuals: np.ndarray,
+    staleness: np.ndarray,
+    values: np.ndarray,
+    window: int,
+    relational: RelationalModel | None = None,
 ) -> dict[str, np.ndarray]:
     """Raw (un-normalized) per-signal evidence, each (n_ticks, n_signals).
-    The signed channel is held at 0 until a full window exists: before that
-    the "mean" is a handful of unsmoothed residuals and would false-alarm.
+    The signed (and partner) channel is held at 0 until a full window exists:
+    before that the "mean" is a handful of unsmoothed values and would false-alarm.
     """
     signed = np.abs(rolling_mean(residuals, window))
     signed[: window - 1] = 0.0
-    return {
+    channels = {
         "signed": signed,
         "stale": staleness.astype(np.float64),
         "frozen": frozen_streak_length(values).astype(np.float64),
     }
+    if relational is not None:
+        partner = rolling_mean(relational.mismatch(values), window)
+        partner[: window - 1] = 0.0
+        channels["partner"] = partner
+    return channels
 
 
 def count_alerts(flags: np.ndarray, merge_gap_ticks: int = EVENT_MERGE_GAP_TICKS) -> int:
@@ -153,6 +166,8 @@ class DetectorCalibration:
     calibration_alerts_per_minute: float  # alert rate actually achieved there at `tau`
     # (n_signals,) biggest single-tick value change seen in normal data; None = jump score disabled (all zeros)
     jump_scales: np.ndarray | None = None
+    # the partner-consistency model the "partner" channel uses; None = channel off
+    relational: RelationalModel | None = None
 
     def save(self, path: Path) -> None:
         payload = asdict(self)
@@ -166,6 +181,8 @@ class DetectorCalibration:
         payload["scales"] = {k: np.array(v) for k, v in payload["scales"].items()}
         if payload.get("jump_scales") is not None:
             payload["jump_scales"] = np.array(payload["jump_scales"])
+        if payload.get("relational") is not None:
+            payload["relational"] = RelationalModel(**payload["relational"])
         return cls(**payload)
 
 
@@ -181,7 +198,7 @@ class DetectorOutput:
 
 
 def _normalized(channels: dict[str, np.ndarray], scales: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-    return {c: channels[c] / scales[c] for c in CHANNELS}
+    return {c: channels[c] / scales[c] for c in scales}
 
 
 def fit_detector(
@@ -194,6 +211,7 @@ def fit_detector(
     frozen_percentile: float = DETECTOR_FROZEN_PERCENTILE,
     staleness_margin: float = DETECTOR_STALENESS_MARGIN,
     jump_percentile: float = DETECTOR_JUMP_PERCENTILE,
+    relational: RelationalModel | None = None,
 ) -> DetectorCalibration:
     """Calibrate on normal streams only: per-signal channel scales from the
     pooled streams, then the smallest `tau` whose alert rate on those same
@@ -208,10 +226,11 @@ def fit_detector(
     """
     if not streams:
         raise ValueError("fit_detector needs at least one normal stream")
-    raw = [evidence_channels(s.residuals, s.staleness, s.values, window) for s in streams]
+    raw = [evidence_channels(s.residuals, s.staleness, s.values, window, relational) for s in streams]
+    channel_names = list(raw[0])
 
     scales: dict[str, np.ndarray] = {}
-    for c in CHANNELS:
+    for c in channel_names:
         pooled = np.concatenate([r[c] for r in raw])
         if c == "stale":
             scales[c] = np.maximum(pooled.max(axis=0), 1.0) * staleness_margin
@@ -220,7 +239,7 @@ def fit_detector(
         else:
             scales[c] = np.maximum(np.percentile(pooled, scale_percentile, axis=0), 1e-9)
 
-    scores = [np.max([(r[c] / scales[c]).max(axis=1) for c in CHANNELS], axis=0) for r in raw]
+    scores = [np.max([(r[c] / scales[c]).max(axis=1) for c in channel_names], axis=0) for r in raw]
     minutes = sum(len(s) for s in scores) * step / 60.0
     pooled_scores = np.concatenate(scores)
 
@@ -244,6 +263,7 @@ def fit_detector(
         calibration_minutes=minutes,
         calibration_alerts_per_minute=achieved,
         jump_scales=jump_scales,
+        relational=relational,
     )
 
 
@@ -251,10 +271,10 @@ def detect(
     calibration: DetectorCalibration, residuals: np.ndarray, staleness: np.ndarray, values: np.ndarray
 ) -> DetectorOutput:
     """Score one tick-aligned stream and flag ticks whose score exceeds tau."""
-    raw = evidence_channels(residuals, staleness, values, calibration.window)
+    raw = evidence_channels(residuals, staleness, values, calibration.window, calibration.relational)
     normalized = _normalized(raw, calibration.scales)
-    channel_scores = {c: normalized[c].max(axis=1) for c in CHANNELS}
-    score = np.max([channel_scores[c] for c in CHANNELS], axis=0)
+    channel_scores = {c: normalized[c].max(axis=1) for c in normalized}
+    score = np.max(list(channel_scores.values()), axis=0)
     top_signal = normalized["signed"].argmax(axis=1)
     top_signal_streak = raw["frozen"][np.arange(len(top_signal)), top_signal]
     if calibration.jump_scales is None:

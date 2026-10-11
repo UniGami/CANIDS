@@ -52,12 +52,12 @@ The trained model is run over a test file (which may contain an attack), produci
 The prediction errors, staleness counters, and correlation graph are fed through four rule checks, in priority order, to decide if and how each signal looks anomalous at each moment: suppression (gone silent too long), plateau (frozen while expected to change), drift (steadily trending away, measured with a running cumulative check), replay (spiking together with a correlated partner, without matching the earlier patterns).
 > Sample: tick 5000, `id6_sig2` -> rules fired: `["drift"]` -> primary label: `"drift"`.
 
-**13. Fusion** *(planned, not yet built)*
-Intended to combine this attribution-layer verdict with a second, independent detector (an Isolation Forest looking at message rate/plausibility, not yet built) using "flag if either one says attack."
-> Sample (once built): Branch 1 says normal, Branch 2 says attack -> combined verdict: attack.
+**13. Fusion**
+Combines Branch 1's verdict with a second, independent detector (Branch 2: message-rate and plausibility limits) using "flag if either one says attack." Later versions of the project replaced this layer's own tick verdict with the windowed detector (`docs/10-detector.md`); this file describes the original rule-based flow.
+> Sample: Branch 1 says normal, Branch 2 says attack -> combined verdict: attack.
 
 **14. Tick-level verdict**
-Right now (before fusion exists), a single tick is called "flagged" the moment any one of the signals has a primary label set at all.
+In this original flow a single tick is called "flagged" the moment any one of the signals has a primary label set at all (the project's later windowed detector, `docs/10-detector.md`, replaced this because that rule over-flags).
 > Sample: tick 5000 -> at least one signal flagged -> overall verdict: `ATTACK`.
 
 **15. Evaluation metrics**

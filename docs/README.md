@@ -15,7 +15,7 @@ where they were actually caught (usually by a test), not smoothed over.
 - [08-attribution-layer.md](08-attribution-layer.md) — Step 9: `attribution/rules.py`.
 - [09-evaluation.md](09-evaluation.md) — Step 13: `evaluate.py`.
 
-Steps 10-12 (TCN, Isolation Forest, fusion) will get their own files here as
+Step 10 (TCN, a teammate's branch) will get its own file here as
 they're implemented — Step 13 landed out of order, prompted by a real-data
 false-positive finding that needed proper measurement tooling to chase down.
 
@@ -50,5 +50,5 @@ already-built pieces.
 - `10-detector.md` — stage-1 windowed detector replacing the OR-of-rules "is anything wrong?" decision; real-data results, ablations, caveats.
   Includes the practice-attack (stricter) test: `scripts/build_injected_attacks.py`, `scripts/injected_check.py`.
 - `11-real-data-results.md` — real SynCAN results in one place: tick-level, event-level, old-vs-new comparison, and attack-type labels, with how they were produced and caveats.
-- `12-branch2.md` — Branch 2 (message-rate Isolation Forest + plausibility limits), fusion (Branch 1 OR Branch 2), flooding/fuzzing labels, real and practice results, and why the limits matter.
-  Branch 2 also covers: whether the Isolation Forest earns its place (it does not on SynCAN), and `scripts/fit_branch2.py`.
+- `12-branch2.md` — Branch 2 (message-rate / plausibility limits), fusion (Branch 1 OR Branch 2), flooding/fuzzing labels, real and practice results, and why the Isolation Forest it started with was dropped.
+- `13-partner-channel.md` — partner-consistency evidence channel (signals vs their cross-ID partners): drift tick recall 0.565 -> 0.737, the criteria set beforehand and the two narrow misses, costs and caveats.

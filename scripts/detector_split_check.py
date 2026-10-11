@@ -22,6 +22,7 @@ from pathlib import Path
 import numpy as np
 
 from canids.config import GRID_STEP_SECONDS
+from canids.relational import RelationalModel
 from canids.detector import NormalStream, detect, fit_detector
 from canids.evaluate import event_metrics, quiet_split_point
 
@@ -43,7 +44,11 @@ def _stream(d: dict[str, np.ndarray]) -> NormalStream:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("cache_dir", type=Path)
+    parser.add_argument("--relational-model", type=Path, default=Path("models") / "relational_syncan_train1.json")
+    parser.add_argument("--no-partner", action="store_true", help="leave the partner-consistency channel out of the Branch 1 detector")
     args = parser.parse_args()
+    relational = None if args.no_partner or not args.relational_model.exists() else RelationalModel.load(args.relational_model)
+    print("partner channel:", f"{len(relational.signals)} signals" if relational else "off")
 
     calib_streams = [_stream(_load(args.cache_dir, n)) for n in ("train1_val", "train2")]
     attacks = {a: _load(args.cache_dir, a) for a in ATTACKS}
@@ -54,7 +59,7 @@ def main() -> None:
     results: dict[tuple[int, float], dict[str, tuple]] = {}
     for window in WINDOWS:
         for target in TARGETS:
-            det = fit_detector(calib_streams, window=window, target_alerts_per_minute=target)
+            det = fit_detector(calib_streams, window=window, target_alerts_per_minute=target, relational=relational)
             per_attack = {}
             for a in ATTACKS:
                 d = attacks[a]

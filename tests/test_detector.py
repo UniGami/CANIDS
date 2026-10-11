@@ -204,3 +204,63 @@ def test_detect_reports_smooth_ramp_per_tick():
     assert out.smooth_ramp.shape == out.flags.shape
     assert out.smooth_ramp[5600:6000].all()
     assert not out.smooth_ramp[:4000].any()
+
+
+# ---------------------------------------------------------------- partner channel
+from canids.relational import fit_relational  # noqa: E402
+
+
+def _related_stream(n=12000, seed=0):
+    """4 signals; signal 0 is a function of signal 2 (a partner on another ID), signal 1 of signal 3."""
+    rng = np.random.default_rng(seed)
+    walk = np.cumsum(rng.normal(0, 0.01, (n, 2)), axis=0)
+    values = np.column_stack(
+        [0.5 * walk[:, 0] + 0.2 + rng.normal(0, 0.002, n), 0.3 * walk[:, 1] - 0.1 + rng.normal(0, 0.002, n), walk[:, 0], walk[:, 1]]
+    )
+    return NormalStream(residuals=rng.normal(0, 0.01, (n, 4)), staleness=np.zeros((n, 4)), values=values)
+
+
+def _relational():
+    train, held = _related_stream(seed=0), [_related_stream(seed=1)]
+    return fit_relational(train.values, {0: [2], 1: [3]}, [h.values for h in held])
+
+
+def test_no_relational_model_means_no_partner_channel_and_the_old_behaviour():
+    det = fit_detector([_related_stream(seed=1), _related_stream(seed=2)], window=20)
+    out = detect(det, *(lambda s: (s.residuals, s.staleness, s.values))(_related_stream(seed=3)))
+    assert set(out.channel_scores) == {"signed", "stale", "frozen"} and det.relational is None
+
+
+def test_partner_channel_fires_on_a_ramp_that_breaks_a_relation_but_not_on_normal_data():
+    rel = _relational()
+    det = fit_detector([_related_stream(seed=1), _related_stream(seed=2)], window=20, relational=rel)
+    test = _related_stream(seed=3)
+    test.values[6000:7000, 0] = test.values[6000, 0] + np.linspace(0, 0.4, 1000)  # drift: signal 0 stops following its partner
+    out = detect(det, test.residuals, test.staleness, test.values)
+
+    assert "partner" in out.channel_scores
+    assert out.channel_scores["partner"][6300:7000].max() > det.tau  # caught inside the ramp
+    assert out.flags[6300:7000].mean() > 0.9
+    assert not out.flags[:5500].any()  # nothing before it
+
+
+def test_partner_channel_catches_a_slow_ramp_that_the_residual_channel_cannot_see():
+    rel = _relational()
+    det = fit_detector([_related_stream(seed=1), _related_stream(seed=2)], window=20, relational=rel)
+    test = _related_stream(seed=3)
+    test.values[6000:7000, 0] = test.values[6000, 0] + np.linspace(0, 0.3, 1000)  # residuals stay pure noise here
+    out = detect(det, test.residuals, test.staleness, test.values)
+    assert out.channel_scores["signed"][6000:7000].max() < det.tau
+    assert out.channel_scores["partner"][6000:7000].max() > det.tau
+
+
+def test_calibration_with_a_relational_model_round_trips(tmp_path):
+    rel = _relational()
+    det = fit_detector([_related_stream(seed=1)], window=20, relational=rel)
+    path = tmp_path / "det.json"
+    det.save(path)
+    loaded = DetectorCalibration.load(path)
+    assert loaded.relational is not None and loaded.relational.signals == rel.signals
+    np.testing.assert_allclose(loaded.scales["partner"], det.scales["partner"])
+    s = _related_stream(seed=4)
+    np.testing.assert_allclose(detect(loaded, s.residuals, s.staleness, s.values).score, detect(det, s.residuals, s.staleness, s.values).score)

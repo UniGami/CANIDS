@@ -3,8 +3,8 @@ attacks (made from normal traffic by scripts/build_injected_attacks.py) and, bes
 them, on the real attack files.
 
 Branch 1 (windowed forecast-residual detector) is fitted like the other checks
-(train_1 validation + train_2, normal data only); Branch 2 (Isolation Forest +
-plausibility limits over message rates) is loaded from --branch2-model. Nothing is
+(train_1 validation + train_2, normal data only); Branch 2 (message-rate /
+plausibility limits) is loaded from --branch2-model. Nothing is
 tuned here. Needs the cache from scripts/cache_gru_outputs.py including the injected
 files (use --extra there) and the CSVs from build_injected_attacks.py.
 
@@ -28,10 +28,11 @@ import numpy as np
 from canids.classify import FALSE_ALARM, type_accuracy, type_confusion
 from canids.config import GRID_STEP_SECONDS, RAW_DATA_DIR, SMOOTH_LOOKAHEAD_TICKS, SYNTHETIC_DATA_DIR
 from canids.data.loader import load_attack
+from canids.relational import RelationalModel
 from canids.detector import NormalStream, count_alerts, detect, fit_detector
 from canids.evaluate import event_metrics
 from canids.fusion import fuse
-from canids.models.isolation_forest import Branch2Model, detect_branch2
+from canids.models.rate_limits import Branch2Model, detect_branch2
 
 # file name in the cache -> the attack type it really is
 FILES = {
@@ -50,10 +51,9 @@ FILES = {
     "flooding": "flooding",
 }
 REAL = {"replay", "drift", "plateau", "flooding"}
-# built to slip under Branch 2's plausibility limits; only used for the "what the forest adds" table, not for type labels
+# built to slip under Branch 2's plausibility limits (to show where they stop working); not used for type labels
 EVASION = {"injected_flooding_mild", "injected_flooding_burst", "injected_suppress_partial"}
-# the forest "earns its place" if on at least one evasion file it finds this many more events (at most MAX_EXTRA_FA more false alarms)
-MIN_EXTRA_EVENTS, MAX_EXTRA_FA = 10, 1
+
 LABELS = ["suppression", "plateau", "drift", "replay", "flooding", "fuzzing"]
 
 
@@ -70,6 +70,10 @@ def _csv(name: str) -> Path:
     return SYNTHETIC_DATA_DIR / f"{name}.csv" if name.startswith("injected_") else RAW_DATA_DIR / f"syncan_test_{name}.csv"
 
 
+def _f3(x: float) -> str:
+    return "n/a" if x != x else f"{x:.3f}"
+
+
 def _tag(name: str) -> str:
     return "" if name in REAL else "  [practice]"
 
@@ -77,11 +81,15 @@ def _tag(name: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("cache_dir", type=Path)
-    parser.add_argument("--branch2-model", type=Path, default=Path("models") / "isolation_forest_syncan_train1.joblib")
+    parser.add_argument("--branch2-model", type=Path, default=Path("models") / "branch2_limits_syncan_train1.json")
     parser.add_argument("--skip-branch2", action="store_true")
+    parser.add_argument("--relational-model", type=Path, default=Path("models") / "relational_syncan_train1.json")
+    parser.add_argument("--no-partner", action="store_true", help="leave the partner-consistency channel out of the Branch 1 detector")
     args = parser.parse_args()
+    relational = None if args.no_partner or not args.relational_model.exists() else RelationalModel.load(args.relational_model)
+    print("partner channel:", f"{len(relational.signals)} signals" if relational else "off")
 
-    det = fit_detector([_stream(_load(args.cache_dir, n)) for n in ("train1_val", "train2")])
+    det = fit_detector([_stream(_load(args.cache_dir, n)) for n in ("train1_val", "train2")], relational=relational)
     print(f"Branch 1 detector: window={det.window} tau={det.tau:.3f}; lookahead tested: 0 and {SMOOTH_LOOKAHEAD_TICKS} ticks\n")
 
     print("BRANCH 1 DETECTION (event level)")
@@ -115,46 +123,25 @@ def main() -> None:
         return
 
     b2 = Branch2Model.load(args.branch2_model)
-    print(f"\nBRANCH 2 (Isolation Forest + plausibility limits), model {args.branch2_model}")
-    print("  event level, Branch 2 alone, split by component (forest only / limits only / both):")
-    print(f"  {'file':26s} {'events':>6s} {'forest':>7s} {'limits':>7s} {'both':>6s} {'alerts':>6s} {'FA/min':>7s} {'strictP':>8s}")
+    print(f"\nBRANCH 2 (message-rate / plausibility limits), model {args.branch2_model}")
+    print("  event level, Branch 1 alone vs Branch 2 alone vs both (fused):")
+    print(f"  {'file':26s} {'events':>6s} | {'B1 found':>8s} {'B2 found':>8s} {'both':>6s} | {'B2 alerts':>9s} {'B2 FA/min':>9s} {'B2 strictP':>10s}")
     fused_outs = {}
-    forest_rows = []
     for name, (out, gt, true_type) in outs.items():
         df = load_attack(_csv(name))
         full = detect_branch2(b2, df)
         ticks = np.arange(len(full.flags) - len(gt), len(full.flags))  # Branch 1 evaluates the last len(gt) ticks
         comp = full.at(ticks)
-        limits = comp.rate_high | comp.oor_high
-        m_f = event_metrics(comp.forest_flags, gt, name, GRID_STEP_SECONDS)
-        m_l = event_metrics(limits, gt, name, GRID_STEP_SECONDS)
-        m_b = event_metrics(comp.flags, gt, name, GRID_STEP_SECONDS)
+        fused = fuse(out, full, ticks)
+        m1 = event_metrics(out.flags, gt, name, GRID_STEP_SECONDS)
+        m2 = event_metrics(comp.flags, gt, name, GRID_STEP_SECONDS)
+        mb = event_metrics(fused.flags, gt, name, GRID_STEP_SECONDS)
         print(
-            f"  {name:26s} {m_b.n_events:6d} {m_f.n_detected:7d} {m_l.n_detected:7d} {m_b.n_detected:6d} {m_b.n_alerts:6d} "
-            f"{m_b.false_alarms_per_minute:7.3f} {m_b.strict_precision:8.3f}{_tag(name)}"
+            f"  {name:26s} {m1.n_events:6d} | {m1.n_detected:8d} {m2.n_detected:8d} {mb.n_detected:6d} | {m2.n_alerts:9d} "
+            f"{m2.false_alarms_per_minute:9.3f} {_f3(m2.strict_precision):>10s}{_tag(name)}{'  [evasion]' if name in EVASION else ''}"
         )
         if name not in EVASION:
-            fused_outs[name] = (fuse(out, full, ticks), gt, true_type)
-        base = out.flags | limits
-        m0, m1 = event_metrics(base, gt, name, GRID_STEP_SECONDS), event_metrics(base | comp.forest_flags, gt, name, GRID_STEP_SECONDS)
-        forest_rows.append((name, m0, m1))
-
-    print("\nWHAT THE FOREST ADDS: Branch 1 + plausibility limits, without vs with the Isolation Forest")
-    print(f"  {'file':26s} {'events':>6s} | {'found':>6s} {'alerts':>6s} {'false':>6s} | {'found':>6s} {'alerts':>6s} {'false':>6s} | found ONLY thanks to the forest / extra false alarms")
-    verdict = []
-    for name, m0, m1 in forest_rows:
-        extra, extra_fa = m1.n_detected - m0.n_detected, m1.n_false_alarms - m0.n_false_alarms
-        print(
-            f"  {name:26s} {m0.n_events:6d} | {m0.n_detected:6d} {m0.n_alerts:6d} {m0.n_false_alarms:6d} | "
-            f"{m1.n_detected:6d} {m1.n_alerts:6d} {m1.n_false_alarms:6d} | {extra:+d} / {extra_fa:+d}{_tag(name)}{'  [evasion]' if name in EVASION else ''}"
-        )
-        if name in EVASION:
-            verdict.append((name, extra, extra_fa))
-    earned = [v for v in verdict if v[1] >= MIN_EXTRA_EVENTS and v[2] <= MAX_EXTRA_FA]
-    print(
-        f"  decision rule (fixed before running): the forest earns its place if on at least one [evasion] file it finds >= {MIN_EXTRA_EVENTS} more "
-        f"events with <= {MAX_EXTRA_FA} extra false alarm -> {'YES: ' + ', '.join(v[0] for v in earned) if earned else 'NO'}"
-    )
+            fused_outs[name] = (fused, gt, true_type)
 
     # held-out NORMAL data: how often does each branch cry wolf?
     if (RAW_DATA_DIR / "syncan_test_normal.csv").exists() and (args.cache_dir / "normal.npz").exists():

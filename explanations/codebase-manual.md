@@ -22,7 +22,13 @@ CAN_IDS/
 │   ├── correlation.py        Partner correlation graph (for replay detection)
 │   ├── calibration.py        Threshold calibration from normal data
 │   ├── evaluate.py           Scoring / metrics / evaluation orchestration
-│   ├── fusion.py             STUB — combining Branch 1 + Branch 2 (not built yet)
+│   ├── fusion.py             Combines Branch 1 + Branch 2 with OR (flag if either flags)
+│   ├── detector.py           Branch 1's windowed detector: one calibrated score per tick (see docs/10)
+│   ├── classify.py           Names each alert: suppression / plateau / drift / replay / flooding / fuzzing
+│   ├── relational.py         Partner-consistency: does a signal still agree with its cross-ID partners?
+│   ├── rate_features.py      Branch 2's message-rate features from the raw frames
+│   ├── report.py             The final summary printed at the end of run_evaluation.py
+│   ├── runs.py               Small helpers for stretches of consecutive flagged ticks
 │   ├── attribution/
 │   │   └── rules.py          The 4 detection rules (suppression/plateau/drift/replay)
 │   ├── data/
@@ -32,12 +38,13 @@ CAN_IDS/
 │   │   ├── scaling.py         Signal value scaling
 │   │   ├── loader.py          CSV loading + normal/attack split discipline
 │   │   ├── syncan.py          Real SynCAN dataset adapter
+│   │   ├── inject.py          Practice attacks built from normal data into NEW files (never changes the dataset)
 │   │   └── synthetic.py       Synthetic (fake) data generator
 │   └── models/
 │       ├── naive.py           Naive "predict no change" baseline + confidence gate
 │       ├── gru_seq2seq.py     Branch 1 baseline model (working)
 │       ├── tcn.py             STUB — Branch 1 final model (not built yet)
-│       └── isolation_forest.py STUB — Branch 2 (not built yet)
+│       └── rate_limits.py     Branch 2: message-rate / plausibility limits (working; an Isolation Forest was tried and dropped, docs/12)
 ├── data/                     Generated/downloaded data lives here (not committed)
 │   ├── synthetic/             Output of generate_synthetic_data.py
 │   └── raw/                   Output of prepare_syncan_data.py

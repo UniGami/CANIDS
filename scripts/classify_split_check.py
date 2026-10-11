@@ -23,6 +23,7 @@ import numpy as np
 
 from canids.classify import DRIFT, FALSE_ALARM, PLATEAU, REPLAY, SUPPRESSION, type_accuracy, type_confusion
 from canids.config import SMOOTH_LOOKAHEAD_TICKS
+from canids.relational import RelationalModel
 from canids.detector import NormalStream, detect, fit_detector
 from canids.evaluate import quiet_split_point
 
@@ -58,9 +59,13 @@ def main() -> None:
         "--lookahead", type=int, default=SMOOTH_LOOKAHEAD_TICKS,
         help="let each alert look this many ticks past its end for smooth movement (default config.SMOOTH_LOOKAHEAD_TICKS; 0 = off)",
     )
+    parser.add_argument("--relational-model", type=Path, default=Path("models") / "relational_syncan_train1.json")
+    parser.add_argument("--no-partner", action="store_true", help="leave the partner-consistency channel out of the Branch 1 detector")
     args = parser.parse_args()
+    relational = None if args.no_partner or not args.relational_model.exists() else RelationalModel.load(args.relational_model)
+    print("partner channel:", f"{len(relational.signals)} signals" if relational else "off")
 
-    det = fit_detector([_stream(_load(args.cache_dir, n)) for n in ("train1_val", "train2")])
+    det = fit_detector([_stream(_load(args.cache_dir, n)) for n in ("train1_val", "train2")], relational=relational)
     first_out, second_out, first_gt, second_gt = {}, {}, {}, {}
     for a in ATTACKS:
         d = _load(args.cache_dir, a)
