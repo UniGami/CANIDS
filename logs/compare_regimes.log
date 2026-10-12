@@ -1,0 +1,39 @@
+scored TCN on train_1 (fit): 310469 ticks
+scored TCN on train_1 (val): 310469 ticks
+scored TCN on train_2 (unseen): 62743 ticks
+scored GRU on train_1 (fit): 310469 ticks
+scored GRU on train_1 (val): 310469 ticks
+scored GRU on train_2 (unseen): 62743 ticks
+
+FORECAST ERROR on normal data (mean squared residual over all 20 signals; lower is better)
+model       train_1 (fit)      train_1 (val)   train_2 (unseen)  unseen/val   val/fit
+TCN              0.000068           0.000735           0.006536        8.89     10.76
+GRU              0.000099           0.002831           0.004817        1.70     28.50
+
+PER-SIGNAL MSE (val vs unseen train_2; ratio > 1 = worse on the unseen regime)
+signal          TCN val    TCN tr2   TCN x    GRU val    GRU tr2   GRU x
+id1_sig1       0.000006   0.000736  117.10   0.000066   0.002449   37.27
+id1_sig2       0.000280   0.005548   19.79   0.000600   0.013476   22.47
+id10_sig1      0.000006   0.000018    3.28   0.000039   0.000215    5.55
+id10_sig2      0.012763   0.059657    4.67   0.032139   0.036710    1.14
+id10_sig3      0.000034   0.010115  295.52   0.000059   0.000687   11.57
+id10_sig4      0.000007   0.000213   31.51   0.000042   0.000185    4.39
+id2_sig1       0.000003   0.000543  166.34   0.000037   0.002226   59.79
+id2_sig2       0.000007   0.001757  269.89   0.000061   0.001960   32.03
+id2_sig3       0.000005   0.006079 1315.16   0.000053   0.000216    4.10
+id3_sig1       0.000251   0.001248    4.97   0.000340   0.013490   39.65
+id3_sig2       0.000027   0.003731  139.31   0.000046   0.002510   54.19
+id4_sig1       0.000016   0.003173  199.66   0.000041   0.001641   39.96
+id5_sig1       0.000007   0.002807  399.83   0.000075   0.000482    6.40
+id5_sig2       0.000021   0.011592  540.99   0.000064   0.000182    2.84
+id6_sig1       0.000026   0.010203  386.06   0.000065   0.000201    3.10
+id6_sig2       0.000648   0.001707    2.63   0.021998   0.006540    0.30
+id7_sig1       0.000006   0.000144   26.09   0.000036   0.001734   47.63
+id7_sig2       0.000580   0.003976    6.86   0.000717   0.011061   15.44
+id8_sig1       0.000006   0.007459 1320.14   0.000091   0.000161    1.76
+id9_sig1       0.000007   0.000009    1.25   0.000055   0.000204    3.71
+
+DETECTOR ALERTS PER MINUTE on normal data (threshold calibrated on train_1 val only, target 0.1/min; window=50 ticks, no partner channel)
+model      tau          train_1 (fit)          train_1 (val)       train_2 (unseen)  tau if val+train_2
+TCN      1.962   0.406/min ( 21 in 51.7m)   0.000/min (  0 in 51.7m)  64.836/min (678 in 10.5m)               1.584
+GRU      1.658   0.696/min ( 36 in 51.7m)   0.058/min (  3 in 51.7m)   7.937/min ( 83 in 10.5m)               1.659

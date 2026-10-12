@@ -74,7 +74,7 @@ from canids.classify import (
 from canids.detector import NormalStream, fit_detector
 from canids.evaluate import evaluate_all, evaluate_attack_csv, normal_stream_from_df, per_signal_residual_stats
 from canids.models import naive
-from canids.models import tcn as tcn_module
+from canids.models import tcn
 from canids.models.gru_seq2seq import GRUForecaster, load_model, predict_streaming, save_model, train_streaming
 from canids.models.rate_limits import Branch2Model, fit_branch2
 from canids.relational import RelationalModel, fit_relational_from_frames
@@ -135,6 +135,11 @@ def main() -> None:
     parser.add_argument(
         "--model-path", type=Path, default=None,
         help="load a previously-trained model from here if it exists; otherwise train fresh and save it here",
+    )
+    parser.add_argument(
+        "--model-type", choices=["gru", "tcn"], default="gru",
+        help="which Branch 1 forecaster --model-path holds. 'tcn' only loads a checkpoint written by "
+        "scripts/train_tcn.py (it never trains one here); everything downstream is identical.",
     )
     parser.add_argument(
         "--forecaster", choices=["gru", "tcn"], default="gru",
@@ -255,6 +260,12 @@ def main() -> None:
     val_joint = build_joint_vector(val_alignment, registry)
 
     _print_header("Model")
+    if args.model_type == "tcn":
+        if not (args.model_path and args.model_path.exists()):
+            raise SystemExit("--model-type tcn needs an existing --model-path checkpoint (train with scripts/train_tcn.py)")
+        print(f"loading TCN from {args.model_path}")
+        model = tcn.load_model(args.model_path)
+    elif args.model_path and args.model_path.exists():
     if args.forecaster == "tcn":
         if args.model_path is None:
             args.model_path = Path("models") / "tcn_syncan_train1.pt"
