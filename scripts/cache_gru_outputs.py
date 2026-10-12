@@ -1,10 +1,12 @@
-"""Run the saved GRU once over every normal/attack file and cache the results
+"""Run a saved forecaster (GRU by default, or the TCN) once over every normal/attack file and cache the results
 (residuals, values, staleness, updated, ground truth) as .npz files, so
 detector experiments (e.g. scripts/detector_split_check.py) can iterate in
 seconds instead of re-running the GRU each time.
 
 Usage:
     python scripts/cache_gru_outputs.py <output_dir>
+    python scripts/cache_gru_outputs.py <output_dir> --forecaster tcn   # uses models/tcn_syncan_train1.pt
+    python scripts/cache_gru_outputs.py <output_dir> --only-extra --normal train3=data/raw/syncan_train_3.csv
     python scripts/cache_gru_outputs.py <output_dir> --only-extra \\
         --extra injected_replay=data/synthetic/injected_replay.csv \\
         --extra injected_plateau=data/synthetic/injected_plateau.csv
@@ -26,7 +28,7 @@ from canids.data.loader import load_attack, load_normal, split_train_val
 from canids.data.staleness import compute_staleness
 from canids.data.windowing import build_joint_vector, valid_forecast_ticks
 from canids.evaluate import resolve_ground_truth
-from canids.models.gru_seq2seq import load_model, predict_streaming
+from canids.models import gru_seq2seq, tcn
 from canids.registry import build_registry
 
 SL = SEQUENCE_LENGTH
@@ -36,6 +38,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("out_dir", type=Path)
     parser.add_argument("--extra", action="append", default=[], metavar="NAME=PATH")
+    parser.add_argument("--forecaster", choices=["gru", "tcn"], default="gru")
+    parser.add_argument("--model-path", type=Path, default=None, help="default: models/<forecaster>_syncan_train1.pt")
+    parser.add_argument("--skip-existing", action="store_true", help="do not recompute files already in out_dir (resume)")
+    parser.add_argument(
+        "--normal", action="append", default=[], metavar="NAME=PATH",
+        help="cache an additional NORMAL-only CSV (no attack labels), e.g. --normal train3=data/raw/syncan_train_3.csv",
+    )
     parser.add_argument("--only-extra", action="store_true", help="skip the standard normal/attack files")
     args = parser.parse_args()
 
@@ -44,9 +53,15 @@ def main() -> None:
     raw = RAW_DATA_DIR
     train1 = raw / "syncan_train_1.csv"
     registry = build_registry([train1])
-    model = load_model(RAW_DATA_DIR.parent.parent / "models" / "gru_syncan_train1.pt")
+    module = tcn if args.forecaster == "tcn" else gru_seq2seq
+    model_path = args.model_path or RAW_DATA_DIR.parent.parent / "models" / f"{args.forecaster}_syncan_train1.pt"
+    model = module.load_model(model_path)
+    predict_streaming = module.predict_streaming
 
     def run(name, df, gt_fn=None):
+        if args.skip_existing and (out / f"{name}.npz").exists():
+            print(name, "already cached, skipped", flush=True)
+            return
         t0 = time.time()
         al = align_to_grid(df, registry, step=GRID_STEP_SECONDS)
         joint = build_joint_vector(al, registry)
@@ -73,6 +88,9 @@ def main() -> None:
             p = raw / f"syncan_test_{name}.csv"
             df = load_attack(p)
             run(name, df, with_labels(p, df))
+    for spec in args.normal:
+        name, _, path = spec.partition("=")
+        run(name, load_normal(Path(path)))
     for spec in args.extra:
         name, _, path = spec.partition("=")
         p = Path(path)

@@ -21,6 +21,9 @@ Usage:
     python scripts/run_evaluation.py --attack-source syncan --normal-csv data/raw/syncan_train_1.csv \
         --model-path models/gru_syncan_train1.pt --batch-size 1024 --skip-residual-report --summary-only
 
+--forecaster tcn evaluates a trained TCN instead of the GRU through the identical pipeline (see its help).
+--attacks plateau drift evaluates only those attack types (quick check).
+
 --summary-only runs the same evaluation but prints only the FINAL SUMMARY at the end (per-attack
 confusion counts, event-level results, the attack-type confusion matrix, overall accuracy).
 
@@ -71,6 +74,7 @@ from canids.classify import (
 from canids.detector import NormalStream, fit_detector
 from canids.evaluate import evaluate_all, evaluate_attack_csv, normal_stream_from_df, per_signal_residual_stats
 from canids.models import naive
+from canids.models import tcn as tcn_module
 from canids.models.gru_seq2seq import GRUForecaster, load_model, predict_streaming, save_model, train_streaming
 from canids.models.rate_limits import Branch2Model, fit_branch2
 from canids.relational import RelationalModel, fit_relational_from_frames
@@ -131,6 +135,17 @@ def main() -> None:
     parser.add_argument(
         "--model-path", type=Path, default=None,
         help="load a previously-trained model from here if it exists; otherwise train fresh and save it here",
+    )
+    parser.add_argument(
+        "--forecaster", choices=["gru", "tcn"], default="gru",
+        help="which Branch 1 forecaster to evaluate. 'tcn' loads a trained TCN checkpoint (default "
+        "models/tcn_syncan_train1.pt; train one with scripts/train_tcn.py) and runs the identical downstream pipeline: "
+        "detector, partner channel, Branch 2, fusion, final summary -- everything model-specific is recomputed from the "
+        "TCN's own residuals on normal validation data",
+    )
+    parser.add_argument(
+        "--attacks", nargs="*", default=None,
+        help="only evaluate these attack types (e.g. --attacks plateau drift); default all. Handy for a quick check.",
     )
     parser.add_argument("--sequence-length", type=int, default=SEQUENCE_LENGTH)
     parser.add_argument("--epochs", type=int, default=TRAINING_EPOCHS)
@@ -240,7 +255,14 @@ def main() -> None:
     val_joint = build_joint_vector(val_alignment, registry)
 
     _print_header("Model")
-    if args.model_path and args.model_path.exists():
+    if args.forecaster == "tcn":
+        if args.model_path is None:
+            args.model_path = Path("models") / "tcn_syncan_train1.pt"
+        if not args.model_path.exists():
+            raise SystemExit(f"TCN checkpoint not found: {args.model_path} (train one with scripts/train_tcn.py)")
+        print(f"loading TCN from {args.model_path}")
+        model = tcn_module.load_model(args.model_path)
+    elif args.model_path and args.model_path.exists():
         print(f"loading model from {args.model_path}")
         model = load_model(args.model_path)
     else:
@@ -286,6 +308,11 @@ def main() -> None:
     print(f"correlation graph: {len(correlation.edges)} edges")
 
     attack_csvs = _default_attack_csvs(args.attack_source)
+    if args.attacks:
+        unknown = [a for a in args.attacks if a not in attack_csvs]
+        if unknown:
+            raise SystemExit(f"unknown attack type(s) {unknown}; available: {sorted(attack_csvs)}")
+        attack_csvs = {t: p for t, p in attack_csvs.items() if t in args.attacks}
     missing = [attack_type for attack_type, path in attack_csvs.items() if not path.exists()]
     if missing:
         print(f"warning: missing attack CSVs for {missing}, skipping those attack types")
@@ -463,7 +490,8 @@ def main() -> None:
                 result.fused_metrics if fused_verdict else result.detector_metrics,
                 result.fused_event_metrics if fused_verdict else result.detector_event_metrics,
                 type_confusion(outputs, result.ground_truths, detector),
-                "real SynCAN attack files, " + ("Branch 1 OR Branch 2 (fused)" if fused_verdict else "Branch 1 only"),
+                f"real SynCAN attack files, {args.forecaster.upper()} forecaster, "
+                + ("Branch 1 OR Branch 2 (fused)" if fused_verdict else "Branch 1 only"),
             )
         )
 
