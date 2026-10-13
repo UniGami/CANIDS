@@ -1,0 +1,4 @@
+loaded gru from models\gru_syncan_train1.pt
+detector tau=1.876 calibrated on 207.0 min
+saved logs\diag\gru.npz
+GRU_COLLECT_DONE

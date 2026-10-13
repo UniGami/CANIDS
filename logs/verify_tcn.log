@@ -1,0 +1,4 @@
+
+===== tcn =====
+  floor    tau |  tickP  tickR tickF1 |     found alerts false FA/min |  typeAcc | strict F1 per attack:  plate  drift  repla  suppr  flood
+ 0.0100  1.865 |  0.907  0.943  0.925 |  542/545     675    53  0.168 |    0.918 |                        0.953  0.935  0.966  0.924  0.987

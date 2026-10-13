@@ -9,11 +9,15 @@ which kind, using nothing but which evidence channel fired inside each alert
        a. the frozen-value channel is above threshold (works for signals that
           normally keep moving, where any long freeze is abnormal), or
        b. the signal with the biggest forecast error at the alert's peak has
-          not changed for a whole detector window. (b) is what catches
-          plateaus on signals that are naturally flat for thousands of ticks
-          in normal driving -- (a) can never fire for those, since a long
-          freeze is normal for them -- and it is safe because a flat value
-          together with a large forecast error is exactly what a plateau is.
+          not changed for a whole detector window, AND a signal the detector
+          blames is frozen in an informative way (_informative_freeze): flat
+          for most of the alert, with the freeze starting at the alert or the
+          signal not being one that sits flat anyway in normal driving.
+          (b) is what catches plateaus on signals that are naturally flat for
+          thousands of ticks in normal driving -- (a) can never fire for those,
+          since a long freeze is normal for them. The informative-freeze test
+          is what stops a replay or drift whose biggest-error signal merely
+          happens to be a naturally flat one from being read as a plateau.
   3. else some signal moves smoothly in ONE direction during the alert
                                          -> "drift"
   4. else                                -> "replay"
@@ -43,7 +47,13 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from canids.config import EVENT_ALERT_MERGE_GAP_TICKS, EVENT_MERGE_GAP_TICKS, SMOOTH_LOOKAHEAD_TICKS
+from canids.config import (
+    CLASSIFY_FROZEN_SHARE,
+    CLASSIFY_NATURALLY_FLAT_SHARE,
+    EVENT_ALERT_MERGE_GAP_TICKS,
+    EVENT_MERGE_GAP_TICKS,
+    SMOOTH_LOOKAHEAD_TICKS,
+)
 from canids.detector import DetectorCalibration, DetectorOutput
 from canids.fusion import FusedOutput
 from canids.runs import merge_runs, runs
@@ -79,6 +89,29 @@ class AlertLabel:
     label: str
 
 
+def _informative_freeze(output: DetectorOutput, calibration: DetectorCalibration, s: int, e: int) -> bool:
+    """Is a signal the detector BLAMES during the alert [s, e) really frozen, in a way that says "plateau"?
+    Blamed = every signal whose normalized residual evidence crosses the alarm line at some tick of the alert
+    (the single biggest-error signal if none does). It is frozen if it is flat for at least a detector window
+    for most of the alert, and the freeze is informative if it started at the alert (the signal was moving
+    just before) or the signal is not one that sits flat for long stretches in normal driving anyway. A
+    replay or drift that merely puts a naturally flat signal on top therefore does not read as a plateau.
+    Falls back to "yes" (the older, looser test) when the per-signal detail is not available.
+    """
+    if output.signal_scores is None or output.flat_streak is None or calibration.flat_share is None:
+        return True
+    window = calibration.window
+    scores = output.signal_scores[s:e]
+    blamed = np.flatnonzero(scores.max(axis=0) > calibration.tau)
+    if not len(blamed):
+        blamed = np.array([int(scores.max(axis=0).argmax())])
+    flat = output.flat_streak[s:e][:, blamed] >= window
+    frozen = flat.mean(axis=0) >= CLASSIFY_FROZEN_SHARE
+    new_freeze = output.flat_streak[s, blamed] < window
+    informative = frozen & (new_freeze | (calibration.flat_share[blamed] < CLASSIFY_NATURALLY_FLAT_SHARE))
+    return bool(informative.any())
+
+
 def _label_branch1(
     output: DetectorOutput, calibration: DetectorCalibration, s: int, e: int, lookahead_ticks: int
 ) -> str:
@@ -87,7 +120,9 @@ def _label_branch1(
     peak = s + int(output.channel_scores["signed"][s:e].argmax())
     if output.channel_scores["stale"][s:e].max() > tau:
         return SUPPRESSION
-    if output.channel_scores["frozen"][s:e].max() > tau or output.top_signal_streak[peak] >= calibration.window:
+    if output.channel_scores["frozen"][s:e].max() > tau or (
+        output.top_signal_streak[peak] >= calibration.window and _informative_freeze(output, calibration, s, e)
+    ):
         return PLATEAU
     return DRIFT if output.smooth_ramp[s : e + lookahead_ticks].any() else REPLAY
 

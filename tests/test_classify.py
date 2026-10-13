@@ -148,3 +148,61 @@ def test_default_lookahead_is_one_smoothness_window():
     assert SMOOTH_LOOKAHEAD_TICKS == 6 * SMOOTH_LAG_TICKS
     out = _output(n=2000, signed=(300, 400), smooth_span=(400 + SMOOTH_LOOKAHEAD_TICKS - 20, 400 + SMOOTH_LOOKAHEAD_TICKS))
     assert classify_alerts(out, CAL)[0].label == DRIFT  # within the default lookahead
+
+
+# ---- informative-freeze test for the weak plateau clause (the biggest-error signal is "unchanged") -------------------
+from dataclasses import replace  # noqa: E402
+
+
+def _alert_with_signal_detail(flat_before: bool, naturally_flat: bool, others_blamed: bool = False):
+    """A residual-only alert on ticks 100..300 whose biggest-error signal (signal 0) has been unchanged for a whole
+    window at the peak, so the OLD rule calls it plateau. Per-signal detail says whether that signal was already
+    flat before the alert started, and whether it is a signal that is flat for much of normal driving anyway."""
+    out = _output(streak=60.0, signed=(100, 300))
+    n = 1000
+    scores = np.zeros((n, 3), dtype=np.float32)
+    scores[100:300, 0] = 5.0
+    if others_blamed:
+        scores[100:300, 1] = 5.0  # a second signal that is also blamed (and keeps moving)
+    flat = np.zeros((n, 3), dtype=np.float32)
+    if flat_before:
+        flat[:, 0] = 500.0  # flat the whole time, long before the alert
+    else:
+        flat[100:, 0] = np.arange(1, n - 100 + 1)  # the freeze starts exactly at the alert
+    out.signal_scores, out.flat_streak = scores, flat
+    cal = replace(CAL, flat_share=np.array([0.9 if naturally_flat else 0.0, 0.0, 0.0]))
+    return out, cal
+
+
+def test_freeze_that_starts_at_the_alert_is_a_plateau():
+    out, cal = _alert_with_signal_detail(flat_before=False, naturally_flat=True)
+    assert classify_alerts(out, cal)[0].label == PLATEAU
+
+
+def test_naturally_flat_signal_that_was_already_flat_is_not_a_plateau():
+    # the signal was flat long before the alert and is flat much of normal driving: flatness says nothing -> replay
+    out, cal = _alert_with_signal_detail(flat_before=True, naturally_flat=True)
+    assert classify_alerts(out, cal)[0].label == REPLAY
+
+
+def test_flat_before_the_alert_still_counts_if_the_signal_is_normally_busy():
+    # a signal that is rarely flat in normal driving, found flat throughout the alert: that IS informative
+    out, cal = _alert_with_signal_detail(flat_before=True, naturally_flat=False)
+    assert classify_alerts(out, cal)[0].label == PLATEAU
+
+
+def test_a_second_moving_blamed_signal_does_not_veto_a_real_freeze():
+    # forecast error spreads to related signals, so other blamed signals moving must not cancel a genuine freeze
+    out, cal = _alert_with_signal_detail(flat_before=False, naturally_flat=True, others_blamed=True)
+    assert classify_alerts(out, cal)[0].label == PLATEAU
+
+
+def test_without_per_signal_detail_the_old_streak_rule_is_unchanged():
+    out = _output(streak=60.0, signed=(100, 300))  # no signal_scores / flat_streak
+    assert classify_alerts(out, CAL)[0].label == PLATEAU
+
+
+def test_the_frozen_value_channel_still_decides_plateau_on_its_own():
+    out, cal = _alert_with_signal_detail(flat_before=True, naturally_flat=True)
+    out.channel_scores["frozen"][100:300] = 5.0
+    assert classify_alerts(out, cal)[0].label == PLATEAU

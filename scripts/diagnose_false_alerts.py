@@ -218,6 +218,34 @@ def analyze(args: argparse.Namespace) -> None:
                 f"within 2000t: {(d <= 2000).sum()}  farther: {(d > 2000).sum()}  | median distance {np.median(d):.0f}t"
             )
 
+    # Baseline: these files hold ~100 attack intervals each, so a random NORMAL tick is also often "near" one.
+    # Without this, "most false alerts are near an attack" would mean nothing.
+    near_normal = {100: 0, 500: 0, 2000: 0}
+    n_normal = 0
+    for a in attacks:
+        gt = first[f"{a}__gt"]
+        gt_s, gt_e = merge_runs(*runs(gt), EVENT_MERGE_GAP_TICKS)
+        mask = np.zeros(len(gt), dtype=bool)
+        for s, e in zip(gt_s, gt_e):
+            mask[s:e] = True
+        idx = np.arange(len(gt))
+        if len(gt_s):
+            nxt = np.searchsorted(gt_s, idx, side="left")  # next interval starting at/after the tick
+            prv = np.searchsorted(gt_e, idx, side="right") - 1  # last interval ending at/before the tick
+            d_next = np.where(nxt < len(gt_s), gt_s[np.minimum(nxt, len(gt_s) - 1)] - idx, 10**9)
+            d_prev = np.where(prv >= 0, idx - gt_e[np.maximum(prv, 0)], 10**9)
+            dist = np.minimum(d_next, d_prev)
+        else:
+            dist = np.full(len(gt), 10**9)
+        normal = ~mask
+        n_normal += int(normal.sum())
+        for k in near_normal:
+            near_normal[k] += int((normal & (dist <= k)).sum())
+    print(
+        "  baseline (ANY normal tick, for comparison): "
+        + "  ".join(f"within {k}t: {v / n_normal:.0%}" for k, v in near_normal.items())
+    )
+
     print("\nTIME CLUSTERING: share of a file's false alerts that fall in its busiest 5% slice of time")
     for m in caches:
         for a in attacks:

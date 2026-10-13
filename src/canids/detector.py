@@ -41,6 +41,7 @@ from canids.runs import merge_runs, runs
 from canids.config import (
     DETECTOR_FROZEN_PERCENTILE,
     DETECTOR_JUMP_PERCENTILE,
+    DETECTOR_SIGNED_SCALE_FLOOR,
     DETECTOR_SCALE_PERCENTILE,
     DETECTOR_STALENESS_MARGIN,
     DETECTOR_TARGET_ALERTS_PER_MINUTE,
@@ -168,11 +169,15 @@ class DetectorCalibration:
     jump_scales: np.ndarray | None = None
     # the partner-consistency model the "partner" channel uses; None = channel off
     relational: RelationalModel | None = None
+    # (n_signals,) share of NORMAL ticks each signal spends in a flat run of at least `window` ticks (how
+    # "naturally flat" it is); None = unknown, classify.py then skips its informative-freeze test
+    flat_share: np.ndarray | None = None
 
     def save(self, path: Path) -> None:
         payload = asdict(self)
         payload["scales"] = {k: v.tolist() for k, v in self.scales.items()}
         payload["jump_scales"] = None if self.jump_scales is None else self.jump_scales.tolist()
+        payload["flat_share"] = None if self.flat_share is None else self.flat_share.tolist()
         Path(path).write_text(json.dumps(payload, indent=2))
 
     @classmethod
@@ -181,6 +186,8 @@ class DetectorCalibration:
         payload["scales"] = {k: np.array(v) for k, v in payload["scales"].items()}
         if payload.get("jump_scales") is not None:
             payload["jump_scales"] = np.array(payload["jump_scales"])
+        if payload.get("flat_share") is not None:
+            payload["flat_share"] = np.array(payload["flat_share"])
         if payload.get("relational") is not None:
             payload["relational"] = RelationalModel(**payload["relational"])
         return cls(**payload)
@@ -195,6 +202,9 @@ class DetectorOutput:
     top_signal_streak: np.ndarray  # (n_ticks,) raw ticks that top signal's value has been unchanged (for type attribution)
     jump_score: np.ndarray  # (n_ticks,) biggest single-tick value jump over all signals, in units of "biggest normal jump"
     smooth_ramp: np.ndarray  # (n_ticks,) bool: some signal is moving smoothly in one direction (see smooth_one_way)
+    # per-signal detail (n_ticks, n_signals), used by classify.py to ask which signals are really blamed and frozen
+    signal_scores: np.ndarray | None = None  # normalized signed-residual evidence of every signal
+    flat_streak: np.ndarray | None = None  # raw ticks each signal's value has been unchanged
 
 
 def _normalized(channels: dict[str, np.ndarray], scales: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
@@ -212,6 +222,7 @@ def fit_detector(
     staleness_margin: float = DETECTOR_STALENESS_MARGIN,
     jump_percentile: float = DETECTOR_JUMP_PERCENTILE,
     relational: RelationalModel | None = None,
+    signed_scale_floor: float = DETECTOR_SIGNED_SCALE_FLOOR,
 ) -> DetectorCalibration:
     """Calibrate on normal streams only: per-signal channel scales from the
     pooled streams, then the smallest `tau` whose alert rate on those same
@@ -238,8 +249,12 @@ def fit_detector(
             scales[c] = np.maximum(np.percentile(pooled, frozen_percentile, axis=0), 1.0)
         else:
             scales[c] = np.maximum(np.percentile(pooled, scale_percentile, axis=0), 1e-9)
+    if signed_scale_floor > 0 and "signed" in scales:
+        # a very accurate forecaster has a tiny normal error on a smooth signal, which would put that signal's
+        # alarm line at a sliver of its range; floor it so ordinary fast movement can't cross it
+        scales["signed"] = np.maximum(scales["signed"], signed_scale_floor)
 
-    scores = [np.max([(r[c] / scales[c]).max(axis=1) for c in channel_names], axis=0) for r in raw]
+    scores =[np.max([(r[c] / scales[c]).max(axis=1) for c in channel_names], axis=0) for r in raw]
     minutes = sum(len(s) for s in scores) * step / 60.0
     pooled_scores = np.concatenate(scores)
 
@@ -255,6 +270,8 @@ def fit_detector(
     pooled_jumps = np.concatenate([value_jumps(s.values) for s in streams])
     jump_scales = np.maximum(np.percentile(pooled_jumps, jump_percentile, axis=0), 1e-9)
 
+    flat_share = np.mean(np.concatenate([frozen_streak_length(s.values) >= window for s in streams]), axis=0)
+
     return DetectorCalibration(
         window=window,
         tau=tau,
@@ -264,6 +281,7 @@ def fit_detector(
         calibration_alerts_per_minute=achieved,
         jump_scales=jump_scales,
         relational=relational,
+        flat_share=flat_share,
     )
 
 
@@ -289,4 +307,6 @@ def detect(
         top_signal_streak=top_signal_streak,
         jump_score=jump_score,
         smooth_ramp=smooth_one_way(values).any(axis=1),
+        signal_scores=normalized["signed"].astype(np.float32),
+        flat_streak=raw["frozen"].astype(np.float32),
     )

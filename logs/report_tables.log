@@ -1,0 +1,58 @@
+fitting detectors and labelling alerts ...
+  gru: detector tau=1.876 (floor 0.0)
+  tcn: detector tau=1.865 (floor 0.01)
+
+====================================================================================================
+WHOLE FILE (the settings were chosen while looking at these files, so these are optimistic)
+====================================================================================================
+
+                                                   GRU                   TCN
+attacks found                                537 / 545             542 / 545
+tick precision / recall / F1     0.917 / 0.915 / 0.916 0.907 / 0.943 / 0.925
+false-alarm alerts                                  42                    53
+naming, event level (alerts)           576/610 = 94.4%       571/622 = 91.8%
+naming, tick level                         87.4% right           87.6% right
+
+Per attack, tick level (precision / recall / F1) and event level (found / false alarms, strict F1)
+attack                      GRU tick              TCN tick                 GRU event                 TCN event
+plateau        0.906 / 0.955 / 0.930 0.904 / 0.977 / 0.939        114/116, 14, 0.936        116/116, 12, 0.953
+drift          0.907 / 0.733 / 0.810 0.907 / 0.793 / 0.846           92/96, 9, 0.935          94/96, 11, 0.935
+replay         0.936 / 0.836 / 0.883 0.934 / 0.910 / 0.922           91/93, 8, 0.958           92/93, 7, 0.966
+suppression    0.913 / 0.996 / 0.952 0.876 / 0.996 / 0.932         122/122, 9, 0.964        122/122, 20, 0.924
+flooding       0.925 / 1.000 / 0.961 0.924 / 1.000 / 0.961         118/118, 2, 0.992         118/118, 3, 0.987
+
+Attack naming per type
+attack                  GRU, event          TCN, event         GRU, tick         TCN, tick
+plateau            100/117 = 85.5%      95/123 = 77.2%             85.2%             78.9%
+drift              110/117 = 94.0%     112/122 = 91.8%             71.8%             75.6%
+replay             126/136 = 92.6%     124/137 = 90.5%             74.0%             78.7%
+suppression       122/122 = 100.0%    122/122 = 100.0%             99.6%             99.6%
+flooding          118/118 = 100.0%    118/118 = 100.0%            100.0%            100.0%
+
+====================================================================================================
+SECOND HALF OF EACH FILE ONLY (a stability check, not a clean hold-out)
+====================================================================================================
+
+                                                   GRU                   TCN
+attacks found                                270 / 274             272 / 274
+tick precision / recall / F1     0.912 / 0.907 / 0.909 0.902 / 0.939 / 0.920
+false-alarm alerts                                  26                    25
+naming, event level (alerts)           291/310 = 93.9%       289/316 = 91.5%
+naming, tick level                         86.9% right           88.0% right
+
+Per attack, tick level (precision / recall / F1) and event level (found / false alarms, strict F1)
+attack                      GRU tick              TCN tick                 GRU event                 TCN event
+plateau        0.885 / 0.935 / 0.910 0.881 / 0.962 / 0.920           58/59, 6, 0.945           59/59, 5, 0.963
+drift          0.904 / 0.741 / 0.815 0.905 / 0.805 / 0.852           45/47, 8, 0.909          46/47, 10, 0.906
+replay         0.943 / 0.809 / 0.871 0.942 / 0.900 / 0.920           48/49, 4, 0.956           48/49, 3, 0.963
+suppression    0.912 / 0.996 / 0.952 0.875 / 0.996 / 0.932           61/61, 6, 0.953           61/61, 4, 0.968
+flooding       0.923 / 1.000 / 0.960 0.923 / 1.000 / 0.960           58/58, 2, 0.983           58/58, 3, 0.975
+
+Attack naming per type
+attack                  GRU, event          TCN, event         GRU, tick         TCN, tick
+plateau              50/60 = 83.3%       50/65 = 76.9%             83.0%             78.9%
+drift                54/59 = 91.5%       53/60 = 88.3%             72.7%             76.1%
+replay               68/72 = 94.4%       67/72 = 93.1%             74.0%             81.6%
+suppression         61/61 = 100.0%      61/61 = 100.0%             99.6%             99.6%
+flooding            58/58 = 100.0%      58/58 = 100.0%            100.0%            100.0%
+REPORT_DONE

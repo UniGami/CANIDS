@@ -1,0 +1,8 @@
+calibration streams: 4
+  plateau: 449,995 ticks
+  drift: 449,996 ticks
+  replay: 449,994 ticks
+  suppression: 449,994 ticks
+  flooding: 449,995 ticks
+saved logs\sweep\tcn.npz
+TCN_COLLECT_DONE

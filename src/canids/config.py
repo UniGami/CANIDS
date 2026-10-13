@@ -147,6 +147,17 @@ DETECTOR_TARGET_ALERTS_PER_MINUTE = 0.1
 DETECTOR_SCALE_PERCENTILE = 99.9
 DETECTOR_FROZEN_PERCENTILE = 99.99
 DETECTOR_STALENESS_MARGIN = 1.5
+# Minimum per-signal scale for the signed-residual channel, in signal units (SynCAN signals are ~0..1). 0 = off.
+# A very accurate forecaster (the all-files TCN) gets a tiny normal-error scale on smooth signals -- e.g. 0.001 on
+# id10_sig1, an alarm line at 0.1% of the signal's range -- and ordinary fast movement then crosses it
+# (see scripts/diagnose_false_alerts.py). A floor keeps every signal's alarm line above that noise.
+DETECTOR_SIGNED_SCALE_FLOOR = 0.0
+# Attack-type labelling, plateau test on "the signal was unchanged" (classify.py): a signal the detector blames
+# counts as FROZEN over an alert if it is flat (for at least one detector window) for this share of the alert's
+# ticks, and the freeze is INFORMATIVE if it began at the alert, or the signal is not one that sits flat anyway
+# in normal driving (flat for less than NATURALLY_FLAT_SHARE of normal ticks).
+CLASSIFY_FROZEN_SHARE = 0.5
+CLASSIFY_NATURALLY_FLAT_SHARE = 0.2
 # Percentile of normal single-tick value changes that counts as "the biggest jump normal traffic ever makes"
 # for a signal; used to spot the sudden jump at the start of a replay (classify.py).
 DETECTOR_JUMP_PERCENTILE = 99.99

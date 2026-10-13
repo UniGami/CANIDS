@@ -1,0 +1,19 @@
+detector tau=1.865, window=50
+share of normal ticks spent in a flat run >= window: {'id10_sig3': 0.501, 'id2_sig1': 0.635, 'id3_sig2': 0.635, 'id4_sig1': 0.313, 'id5_sig2': 0.501, 'id6_sig1': 0.828}
+
+90 alerts are called plateau by the weak clause only. Blamed-signal picture by what REALLY happened:
+true            n | blamed signals (median) any moving all frozen informative freeze
+drift          10 |                     3.5       0.60       0.40               0.20
+false alarm     2 |                     1.0       1.00       0.00               0.00
+plateau        49 |                     3.0       0.67       0.33               0.84
+replay         29 |                     2.0       0.79       0.21               0.31
+
+baseline naming accuracy of alerts overlapping an attack: 552/622 = 0.887
+V1 (veto if a blamed signal is moving): moves 64 alerts out of plateau -> +28 fixed, -33 broken, net -5
+     first half: +14 / -18
+     second half: +14 / -15
+     naming accuracy 0.887 -> 0.879
+V2 (V1 + the freeze must be informative): moves 76 alerts out of plateau -> +34 fixed, -39 broken, net -5
+     first half: +16 / -20
+     second half: +18 / -19
+     naming accuracy 0.887 -> 0.879

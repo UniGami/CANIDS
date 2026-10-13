@@ -26,6 +26,13 @@ SynCAN-master.zip
 src/canids/SynCAN-master.zip
 results.txt
 
+# Generated analysis caches (residual / evidence arrays, 17-380MB each) -- reproducible with
+# scripts/sweep_signed_floor.py collect and scripts/diagnose_false_alerts.py collect. A single file over
+# 100MB is rejected by GitHub, and pushes this large time out (HTTP 408).
+*.npz
+logs/sweep/
+logs/diag/
+
 # Caches / tooling
 .pytest_cache/
 .mypy_cache/

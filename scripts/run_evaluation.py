@@ -46,6 +46,7 @@ from canids.calibration import calibrate
 from canids.config import (
     CUSUM_ADAPTIVE_DECAY,
     DEFAULT_CALIBRATION_PERCENTILE,
+    DETECTOR_SIGNED_SCALE_FLOOR,
     DETECTOR_TARGET_ALERTS_PER_MINUTE,
     RATE_WINDOW_TICKS,
     DETECTOR_WINDOW_TICKS,
@@ -219,6 +220,13 @@ def main() -> None:
     )
     parser.add_argument("--detector-window", type=int, default=DETECTOR_WINDOW_TICKS)
     parser.add_argument(
+        "--detector-signed-scale-floor", type=float, default=DETECTOR_SIGNED_SCALE_FLOOR,
+        help="minimum per-signal scale of the signed-residual evidence channel, in signal units (0 = off). A very "
+        "accurate forecaster gets a tiny normal-error scale on smooth signals and then false-alarms on ordinary fast "
+        "movement; 0.010 removed ~60%% of the all-files TCN's false alerts at ~1.4 points of tick recall "
+        "(scripts/sweep_signed_floor.py) and does nothing to the GRU, whose scales are all above it",
+    )
+    parser.add_argument(
         "--detector-target-alerts-per-min", type=float, default=DETECTOR_TARGET_ALERTS_PER_MINUTE,
         help="false-alarm budget the detector threshold is calibrated to, in alerts per minute of NORMAL traffic",
     )
@@ -372,7 +380,7 @@ def main() -> None:
         detector = fit_detector(
             streams, window=args.detector_window,
             target_alerts_per_minute=args.detector_target_alerts_per_min, step=args.grid_step,
-            relational=relational,
+            relational=relational, signed_scale_floor=args.detector_signed_scale_floor,
         )
         print(
             f"detector: window={detector.window} ticks  tau={detector.tau:.3f}  calibrated on "

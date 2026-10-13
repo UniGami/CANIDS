@@ -1,1 +1,3 @@
 loaded tcn from models\tcn_syncan_all.pt
+detector tau=1.771 calibrated on 207.0 min
+saved logs\diag\tcn.npz

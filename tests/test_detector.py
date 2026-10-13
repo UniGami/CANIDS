@@ -264,3 +264,60 @@ def test_calibration_with_a_relational_model_round_trips(tmp_path):
     np.testing.assert_allclose(loaded.scales["partner"], det.scales["partner"])
     s = _related_stream(seed=4)
     np.testing.assert_allclose(detect(loaded, s.residuals, s.staleness, s.values).score, detect(det, s.residuals, s.staleness, s.values).score)
+
+
+def test_signed_scale_floor_raises_a_too_tight_scale_and_leaves_bigger_ones_alone():
+    # signal 0 is forecast extremely well (tiny normal error), the others are not
+    def stream(seed):
+        s = _normal_stream(seed=seed)
+        s.residuals[:, 0] *= 0.01
+        return s
+
+    streams = [stream(0), stream(1)]
+    plain = fit_detector(streams, window=20)
+    floored = fit_detector(streams, window=20, signed_scale_floor=0.005)
+
+    assert plain.scales["signed"][0] < 0.005  # the tight one
+    assert floored.scales["signed"][0] == pytest.approx(0.005)  # raised to the floor
+    np.testing.assert_allclose(floored.scales["signed"][1:], plain.scales["signed"][1:])  # others untouched
+    # the floor changes nothing else: other channels' scales are identical
+    for c in ("stale", "frozen"):
+        np.testing.assert_allclose(floored.scales[c], plain.scales[c])
+
+
+def test_signed_scale_floor_stops_a_tiny_bias_on_a_tight_signal_from_alerting():
+    def stream(seed):
+        s = _normal_stream(seed=seed)
+        s.residuals[:, 0] *= 0.01
+        return s
+
+    streams = [stream(0), stream(1)]
+    plain = fit_detector(streams, window=20, target_alerts_per_minute=0.1)
+    floored = fit_detector(streams, window=20, target_alerts_per_minute=0.1, signed_scale_floor=0.005)
+    test = stream(2)
+    test.residuals[3000:3600, 0] += 0.0008  # a sliver of error: huge next to the tight scale, noise next to the floor
+    assert detect(plain, test.residuals, test.staleness, test.values).flags[3100:3600].mean() > 0.5
+    assert detect(floored, test.residuals, test.staleness, test.values).flags[3100:3600].mean() < 0.1
+
+
+def test_flat_share_is_fitted_and_survives_save_and_load(tmp_path):
+    streams = [_normal_stream(seed=0), _normal_stream(seed=1)]
+    for s in streams:
+        s.values[:, 1] = 0.5  # signal 1 never changes in normal data: flat essentially always
+    det = fit_detector(streams, window=20)
+    assert det.flat_share is not None and det.flat_share.shape == (N_SIGNALS,)
+    assert det.flat_share[1] > 0.95 and det.flat_share[0] < 0.01
+
+    path = tmp_path / "det.json"
+    det.save(path)
+    loaded = DetectorCalibration.load(path)
+    np.testing.assert_allclose(loaded.flat_share, det.flat_share)
+
+
+def test_detect_reports_per_signal_scores_and_flat_streaks():
+    det = fit_detector([_normal_stream(seed=0), _normal_stream(seed=1)], window=20)
+    test = _normal_stream(seed=2, n=3000)
+    out = detect(det, test.residuals, test.staleness, test.values)
+    assert out.signal_scores.shape == (3000, N_SIGNALS) and out.flat_streak.shape == (3000, N_SIGNALS)
+    # the per-tick max over signals is exactly the signed channel's score
+    np.testing.assert_allclose(out.signal_scores.max(axis=1), out.channel_scores["signed"], rtol=1e-5)

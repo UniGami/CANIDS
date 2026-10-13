@@ -1,0 +1,44 @@
+detector tau=1.865 (floor 0.01)
+  labelled plateau
+  labelled drift
+  labelled replay
+  labelled suppression
+  labelled flooding
+wrote logs\labels_tcn.csv
+
+A. NAMING ACCURACY of alerts that overlap an attack: whole file | first half | second half
+attack                  all     first half    second half
+plateau       103/123=0.837   48/ 58=0.828   55/ 65=0.846
+drift         104/122=0.852   56/ 62=0.903   48/ 60=0.800
+replay        105/137=0.766   48/ 65=0.738   57/ 72=0.792
+suppression   122/122=1.000   61/ 61=1.000   61/ 61=1.000
+flooding      118/118=1.000   60/ 60=1.000   58/ 58=1.000
+ALL           552/622=0.887  273/306=0.892  279/316=0.883
+
+CONFUSION (rows = true, columns = predicted)
+pred         drift  flooding  fuzzing  plateau  replay  suppression
+true                                                               
+drift          104         0        0       10       8            0
+false alarm      0         0        0       11      42            0
+flooding         0       118        0        0       0            0
+plateau          0         0        2      103      18            0
+replay           3         0        0       29     105            0
+suppression      0         0        0        0       0          122
+
+B. WHICH RULE / FEATURES, for the groups that matter (median per group)
+true->pred                n frozen streak  ramp |    length peak_over streak_pe streak_be flat_frac frozen_ov partner_o     n_top       ptp
+replay->replay          105   0.00   0.00  0.00 |    393.00      6.25      4.00      3.00      0.78      0.54      1.04      1.00      0.16
+replay->plateau          29   0.00   1.00  0.07 |    507.00      4.04    198.00     53.00      0.98      0.54      5.29      1.00      0.05
+replay->drift             3   0.00   0.00  1.00 |    690.00      6.80      3.00      2.00      0.73      0.54     26.93      3.00      0.15
+plateau->plateau        103   0.52   0.86  0.06 |    675.00      5.84     66.00      4.00      0.98      1.07      0.56      2.00      0.38
+plateau->replay          18   0.00   0.00  0.00 |    592.00      5.80      3.00      2.50      0.79      0.54     23.46      2.00      0.10
+drift->drift            104   0.00   0.00  1.00 |    487.50      5.16      3.00      2.00      0.78      0.54     10.03      2.00      0.19
+drift->plateau           10   0.00   1.00  1.00 |    538.50      4.61    774.00    671.50      1.00      0.54      1.89      3.00      0.00
+drift->replay             8   0.00   0.00  0.00 |    158.50      0.69      2.00      1.00      0.77      0.54      1.22      2.00      0.01
+false alarm->replay      42   0.00   0.00  0.00 |     35.00      0.67      2.00      1.00      0.65      0.54      1.08      1.00      0.15
+false alarm->plateau     11   0.82   0.36  0.18 |     21.00      0.20     16.00      7.00      0.97      1.07      0.47      1.00      0.00
+
+(frozen/streak/ramp = share of the group's alerts where that rule clause fired; the rest are medians)
+
+signals behind the replay->plateau alerts: {'id6_sig1': np.int64(11), 'id4_sig1': np.int64(11), 'id2_sig1': np.int64(4), 'id2_sig3': np.int64(2), 'id10_sig1': np.int64(1)}
+signals behind the plateau->plateau alerts: {'id4_sig1': np.int64(24), 'id6_sig1': np.int64(12), 'id3_sig1': np.int64(12), 'id2_sig3': np.int64(9), 'id7_sig2': np.int64(7), 'id6_sig2': np.int64(7)}
