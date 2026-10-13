@@ -52,3 +52,4 @@ already-built pieces.
 - `11-real-data-results.md` — real SynCAN results in one place: tick-level, event-level, old-vs-new comparison, and attack-type labels, with how they were produced and caveats.
 - `12-branch2.md` — Branch 2 (message-rate / plausibility limits), fusion (Branch 1 OR Branch 2), flooding/fuzzing labels, real and practice results, and why the Isolation Forest it started with was dropped.
 - `13-partner-channel.md` — partner-consistency evidence channel (signals vs their cross-ID partners): drift tick recall 0.565 -> 0.737, the criteria set beforehand and the two narrow misses, costs and caveats.
+- `14-tcn-and-calibration.md` — TCN through the same pipeline; why its false alarms were 3.5x the GRU's (too little varied normal data for the detector's calibration), the fix (35-min train_2/train_3 slices), results for both models, what stayed below 95%.

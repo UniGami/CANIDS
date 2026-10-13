@@ -46,6 +46,8 @@ from canids.calibration import calibrate
 from canids.config import (
     CUSUM_ADAPTIVE_DECAY,
     DEFAULT_CALIBRATION_PERCENTILE,
+    DETECTOR_EXTRA_NORMAL_FALLBACK,
+    DETECTOR_EXTRA_NORMAL_FILES,
     DETECTOR_TARGET_ALERTS_PER_MINUTE,
     RATE_WINDOW_TICKS,
     DETECTOR_WINDOW_TICKS,
@@ -72,13 +74,16 @@ from canids.classify import (
     DRIFT, FALSE_ALARM, FLOODING, FUZZING, PLATEAU, REPLAY, SUPPRESSION, type_accuracy, type_confusion,
 )
 from canids.detector import NormalStream, fit_detector
-from canids.evaluate import evaluate_all, evaluate_attack_csv, normal_stream_from_df, per_signal_residual_stats
+from canids.evaluate import (
+    detection_metrics, evaluate_all, evaluate_attack_csv, event_metrics, normal_stream_from_df, per_signal_residual_stats,
+)
 from canids.models import naive
 from canids.models import tcn
 from canids.models.gru_seq2seq import GRUForecaster, load_model, predict_streaming, save_model, train_streaming
 from canids.models.rate_limits import Branch2Model, fit_branch2
 from canids.relational import RelationalModel, fit_relational_from_frames
 from canids.report import format_final_summary
+from canids.runs import refine_alert_bounds
 from canids.registry import build_registry
 
 
@@ -92,6 +97,16 @@ def _default_attack_csvs(source: str) -> dict[str, Path]:
             if attack_type != "normal"
         }
     raise ValueError(f"unknown --attack-source {source!r}")
+
+
+def _default_extra_normal(source: str, normal_csv: Path) -> list[Path]:
+    """Extra normal-only CSVs the detector is calibrated on (and Branch 2 / the partner model are fitted on, if they
+    have to be fitted): config.DETECTOR_EXTRA_NORMAL_FILES if extracted, else the small train_2 slice."""
+    if source != "syncan":
+        return []
+    long_files = [RAW_DATA_DIR / name for name in DETECTOR_EXTRA_NORMAL_FILES]
+    files = long_files if all(p.exists() for p in long_files) else [RAW_DATA_DIR / name for name in DETECTOR_EXTRA_NORMAL_FALLBACK]
+    return [p for p in files if p.exists() and p != normal_csv]
 
 
 def _fmt_metric(x: float) -> str:
@@ -137,12 +152,7 @@ def main() -> None:
         help="load a previously-trained model from here if it exists; otherwise train fresh and save it here",
     )
     parser.add_argument(
-        "--model-type", choices=["gru", "tcn"], default="gru",
-        help="which Branch 1 forecaster --model-path holds. 'tcn' only loads a checkpoint written by "
-        "scripts/train_tcn.py (it never trains one here); everything downstream is identical.",
-    )
-    parser.add_argument(
-        "--forecaster", choices=["gru", "tcn"], default="gru",
+        "--forecaster", "--model-type", dest="forecaster", choices=["gru", "tcn"], default="gru",
         help="which Branch 1 forecaster to evaluate. 'tcn' loads a trained TCN checkpoint (default "
         "models/tcn_syncan_train1.pt; train one with scripts/train_tcn.py) and runs the identical downstream pipeline: "
         "detector, partner channel, Branch 2, fusion, final summary -- everything model-specific is recomputed from the "
@@ -209,6 +219,13 @@ def main() -> None:
         "the detailed tables are not shown",
     )
     parser.add_argument(
+        "--refine-alerts", nargs=3, type=float, metavar=("ALPHA", "MAX_BACK", "TRIM"), default=None,
+        help="in the FINAL SUMMARY's tick and event tables, sharpen each alert's start/stop (runs.refine_alert_bounds): "
+        "walk the start back while the score stays above ALPHA*tau (at most MAX_BACK ticks) and cut TRIM ticks off the end. "
+        "No alert is added or removed; attack naming uses the original alerts. 0.75 100 50 was chosen on the first halves "
+        "of the attack files (scripts/boundary_split_check.py). Off by default.",
+    )
+    parser.add_argument(
         "--skip-partner", action="store_true",
         help="do not use the partner-consistency evidence channel (relational.py) in the Branch 1 detector",
     )
@@ -225,8 +242,9 @@ def main() -> None:
     parser.add_argument(
         "--detector-extra-normal-csv", type=Path, nargs="*", default=None,
         help="extra NORMAL-ONLY CSVs (other driving regimes) to calibrate the detector on, besides the "
-        "validation slice of --normal-csv. Defaults to data/raw/syncan_train_2.csv for --attack-source syncan "
-        "(if present). Never pass attack data here.",
+        "validation slice of --normal-csv. Defaults, for --attack-source syncan, to the 35-minute train_2 and train_3 slices "
+        "(config.DETECTOR_EXTRA_NORMAL_FILES; make them with scripts/extract_normal_slices.py), else the small train_2 slice. "
+        "Never pass attack data here.",
     )
     parser.add_argument("--val-fraction", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=RANDOM_SEED)
@@ -260,19 +278,13 @@ def main() -> None:
     val_joint = build_joint_vector(val_alignment, registry)
 
     _print_header("Model")
-    if args.model_type == "tcn":
-        if not (args.model_path and args.model_path.exists()):
-            raise SystemExit("--model-type tcn needs an existing --model-path checkpoint (train with scripts/train_tcn.py)")
-        print(f"loading TCN from {args.model_path}")
-        model = tcn.load_model(args.model_path)
-    elif args.model_path and args.model_path.exists():
     if args.forecaster == "tcn":
         if args.model_path is None:
             args.model_path = Path("models") / "tcn_syncan_train1.pt"
         if not args.model_path.exists():
             raise SystemExit(f"TCN checkpoint not found: {args.model_path} (train one with scripts/train_tcn.py)")
         print(f"loading TCN from {args.model_path}")
-        model = tcn_module.load_model(args.model_path)
+        model = tcn.load_model(args.model_path)
     elif args.model_path and args.model_path.exists():
         print(f"loading model from {args.model_path}")
         model = load_model(args.model_path)
@@ -353,8 +365,7 @@ def main() -> None:
     if not args.skip_detector:
         extra = args.detector_extra_normal_csv
         if extra is None:
-            default_extra = RAW_DATA_DIR / "syncan_train_2.csv"
-            extra = [default_extra] if args.attack_source == "syncan" and default_extra.exists() and default_extra != args.normal_csv else []
+            extra = _default_extra_normal(args.attack_source, args.normal_csv)
         streams = [NormalStream(val_residuals, val_staleness[val_ticks], val_alignment.values[val_ticks])]
         for path in extra:
             print(f"detector calibration: adding normal stream {path}")
@@ -395,8 +406,7 @@ def main() -> None:
         else:
             extra_b2 = args.detector_extra_normal_csv
             if extra_b2 is None:
-                default_extra = RAW_DATA_DIR / "syncan_train_2.csv"
-                extra_b2 = [default_extra] if args.attack_source == "syncan" and default_extra.exists() and default_extra != args.normal_csv else []
+                extra_b2 = _default_extra_normal(args.attack_source, args.normal_csv)
             branch2 = fit_branch2(
                 train_df, [val_df, *[load_normal(path) for path in extra_b2]], window=RATE_WINDOW_TICKS, step=args.grid_step,
             )
@@ -495,14 +505,31 @@ def main() -> None:
     if detector is not None:
         fused_verdict = branch2 is not None
         outputs = result.fused_outputs if fused_verdict else result.detector_outputs
+        tick_metrics = result.fused_metrics if fused_verdict else result.detector_metrics
+        event_metrics_list = result.fused_event_metrics if fused_verdict else result.detector_event_metrics
+        if args.refine_alerts is not None:
+            alpha, back, trim = args.refine_alerts
+            tick_metrics, event_metrics_list = [], []
+            for attack_type, out in outputs.items():
+                score = out.detector.score if fused_verdict else out.score
+                flags = refine_alert_bounds(out.flags, score, detector.tau, alpha, int(back), int(trim), args.event_alert_merge_gap_ticks)
+                gt = result.ground_truths[attack_type]
+                tick_metrics.append(detection_metrics(flags, gt, attack_type, 0.0))
+                event_metrics_list.append(
+                    event_metrics(
+                        flags, gt, attack_type, args.grid_step,
+                        args.event_merge_gap_ticks, args.event_min_coverage, args.event_alert_merge_gap_ticks,
+                    )
+                )
         print()
         print(
             format_final_summary(
-                result.fused_metrics if fused_verdict else result.detector_metrics,
-                result.fused_event_metrics if fused_verdict else result.detector_event_metrics,
+                tick_metrics,
+                event_metrics_list,
                 type_confusion(outputs, result.ground_truths, detector),
                 f"real SynCAN attack files, {args.forecaster.upper()} forecaster, "
-                + ("Branch 1 OR Branch 2 (fused)" if fused_verdict else "Branch 1 only"),
+                + ("Branch 1 OR Branch 2 (fused)" if fused_verdict else "Branch 1 only")
+                + (f", alert start/stop refined {tuple(args.refine_alerts)}" if args.refine_alerts is not None else ""),
             )
         )
 

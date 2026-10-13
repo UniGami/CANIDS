@@ -147,6 +147,12 @@ DETECTOR_TARGET_ALERTS_PER_MINUTE = 0.1
 DETECTOR_SCALE_PERCENTILE = 99.9
 DETECTOR_FROZEN_PERCENTILE = 99.99
 DETECTOR_STALENESS_MARGIN = 1.5
+# Extra NORMAL-only files (under data/raw/) the detector is calibrated on besides the validation part of the training
+# file: 35-minute slices of SynCAN's train_2 and train_3 (scripts/extract_normal_slices.py). Calibrating on 62 min of
+# one kind of driving made the TCN raise 0.36 false alarms/min on unseen normal driving; on these it raises 0.07
+# (docs/14-tcn-and-calibration.md). Falls back to the 10-minute train_2 slice if they have not been extracted.
+DETECTOR_EXTRA_NORMAL_FILES = ("syncan_train_2_long.csv", "syncan_train_3_long.csv")
+DETECTOR_EXTRA_NORMAL_FALLBACK = ("syncan_train_2.csv",)
 # Percentile of normal single-tick value changes that counts as "the biggest jump normal traffic ever makes"
 # for a signal; used to spot the sudden jump at the start of a replay (classify.py).
 DETECTOR_JUMP_PERCENTILE = 99.99

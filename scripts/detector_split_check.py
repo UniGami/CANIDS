@@ -46,11 +46,15 @@ def main() -> None:
     parser.add_argument("cache_dir", type=Path)
     parser.add_argument("--relational-model", type=Path, default=Path("models") / "relational_syncan_train1.json")
     parser.add_argument("--no-partner", action="store_true", help="leave the partner-consistency channel out of the Branch 1 detector")
+    parser.add_argument(
+        "--calibration-files", nargs="*", default=["train1_val", "train2"],
+        help="cached NORMAL files the detector's threshold and yardsticks are set on (never attack files)",
+    )
     args = parser.parse_args()
     relational = None if args.no_partner or not args.relational_model.exists() else RelationalModel.load(args.relational_model)
     print("partner channel:", f"{len(relational.signals)} signals" if relational else "off")
 
-    calib_streams = [_stream(_load(args.cache_dir, n)) for n in ("train1_val", "train2")]
+    calib_streams = [_stream(_load(args.cache_dir, n)) for n in args.calibration_files]
     attacks = {a: _load(args.cache_dir, a) for a in ATTACKS}
     splits = {a: quiet_split_point(attacks[a]["gt"]) for a in ATTACKS}
     print("split points (tick of first half end / file length):", {a: f"{splits[a]}/{len(attacks[a]['gt'])}" for a in ATTACKS})

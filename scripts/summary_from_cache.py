@@ -35,6 +35,7 @@ from canids.fusion import fuse
 from canids.models.rate_limits import Branch2Model, detect_branch2
 from canids.relational import RelationalModel
 from canids.report import format_final_summary
+from canids.runs import refine_alert_bounds
 
 ATTACKS = ["plateau", "drift", "replay", "suppression", "flooding"]  # same order as run_evaluation.py
 
@@ -61,6 +62,11 @@ def main() -> None:
     parser.add_argument(
         "--calibration-files", nargs="*", default=["train1_val", "train2"],
         help="cached NORMAL files the detector's threshold is set on (never attack files)",
+    )
+    parser.add_argument(
+        "--refine", nargs=3, type=float, metavar=("ALPHA", "MAX_BACK", "TRIM"), default=None,
+        help="sharpen each alert's start/stop in the tick and event tables (runs.refine_alert_bounds; scripts/"
+        "boundary_split_check.py chose 0.75 100 50 on first halves). Attack naming still uses the original alerts.",
     )
     args = parser.parse_args()
 
@@ -90,12 +96,16 @@ def main() -> None:
             ticks = np.arange(len(full.flags) - len(gt), len(full.flags))  # the forecaster evaluates the last len(gt) ticks
             out = fuse(out, full, ticks)
         outputs[name], gts[name] = out, gt
-        tick_m.append(detection_metrics(out.flags, gt, name, 0.0))
-        event_m.append(event_metrics(out.flags, gt, name, GRID_STEP_SECONDS, *ev))
+        flags = out.flags
+        if args.refine is not None:
+            alpha, back, trim = args.refine
+            flags = refine_alert_bounds(flags, out.detector.score if b2 is not None else out.score, det.tau, alpha, int(back), int(trim), EVENT_ALERT_MERGE_GAP_TICKS)
+        tick_m.append(detection_metrics(flags, gt, name, 0.0))
+        event_m.append(event_metrics(flags, gt, name, GRID_STEP_SECONDS, *ev))
 
     title = f"real SynCAN attack files, {args.label.upper()} forecaster, " + (
         "Branch 1 OR Branch 2 (fused)" if b2 is not None else "Branch 1 only"
-    )
+    ) + (f", alert start/stop refined {tuple(args.refine)}" if args.refine is not None else "")
     print()
     print(format_final_summary(tick_m, event_m, type_confusion(outputs, gts, det), title))
 

@@ -35,9 +35,10 @@ evidence is.)
   accurate at this scale).
 - Final model: **TCN** (chosen over Transformer — SynCAN's normal-only
   training data is limited, and Transformer has higher overfitting risk at
-  this data scale). **Not built here yet: a teammate is training it on the
-  `tcn` branch; it will be merged later and everything re-evaluated on its
-  residuals.**
+  this data scale). **Trained by a teammate (`models/tcn_syncan_train1.pt`, train_1 only) and
+  evaluated through the same pipeline (`--forecaster tcn`); about equal to the GRU
+  after the calibration fix, see `docs/14-tcn-and-calibration.md`. Both models may
+  be retrained on more varied driving by the team.**
 - Internal-only sanity check (never reported as a result): naive persistence
   forecaster (predict next = last).
 - No ANN/memory retrieval mechanism. No per-cluster sub-encoders — flat joint
@@ -49,7 +50,8 @@ evidence is.)
   transmitted), `frozen` (length of a run of identical values) and `partner`
   (how far a signal is from what its cross-ID correlation partners imply,
   `src/canids/relational.py`). ONE threshold is set from normal data (train_1
-  validation + train_2) so normal traffic raises ~0.1 alerts per minute. This
+  validation + 35-minute train_2 and train_3 slices, `config.DETECTOR_EXTRA_NORMAL_FILES`) so normal traffic raises
+  ~0.1 alerts per minute. This
   replaces the original "OR of independently thresholded per-signal rules" as
   the is-anything-wrong decision (that design saturated: see
   `docs/10-detector.md`, `docs/notes-false-positive-investigation.md`).
@@ -154,22 +156,24 @@ plateau → drift [CUSUM] → replay [partner residual spikes], with
   `python -u scripts/run_evaluation.py --attack-source syncan --normal-csv
   data/raw/syncan_train_1.csv --model-path models/gru_syncan_train1.pt
   --batch-size 1024 --skip-residual-report` (add `--summary-only` to print
-  only the summary).
+  only the summary; add `--forecaster tcn` and drop `--model-path` for the TCN).
+  Needs `data/raw/syncan_train_{2,3}_long.csv` (`scripts/extract_normal_slices.py`). `--refine-alerts 0.75 100 50` sharpens
+  alert start/stop in the tick/event tables (tick precision ~0.91 -> ~0.98, recall unchanged; docs/14).
 
 ## Current Implementation Status
 Steps 1–9, 11, 12 and 13 of `PLAN.md` are complete: registry, synthetic data
 generator, preprocessing plumbing, correlation graph, GRU baseline (trained
 and checkpointed), the legacy attribution layer, the windowed detector with
 the partner channel, the attack-type labeller, Branch 2 (rate/plausibility
-limits), fusion, and evaluation/reporting. **Step 10 (TCN) is outstanding**
-(teammate, `tcn` branch). Headline real-data results (SynCAN, GRU, fused):
-538 of 545 attack intervals found; tick-level precision 0.909 / recall 0.917;
-571 of 614 attack alerts named correctly (93.0%); flooding 118/118. Known
+limits), fusion, and evaluation/reporting. **Step 10 (TCN) is trained and evaluated** (teammate; `docs/14-tcn-and-calibration.md`).
+Headline real-data results (SynCAN, fused, detector calibrated on train_1 validation + train_2/train_3 slices):
+GRU 537 of 545 attack intervals found, tick-level precision 0.922 / recall 0.913, 571 of 612 attack alerts named
+correctly (93.3%); TCN 539 of 545, 0.913 / 0.916, 560 of 613 (91.4%); flooding 118/118 for both. Known
 gaps: drift tick recall 0.737, mild floods (1.2–1.45× the normal rate) mostly
 missed, drift riding on the true signal mislabelled as replay, fuzzing tested
 only on practice attacks. Details and caveats: `docs/10-detector.md`,
 `docs/11-real-data-results.md` (Branch 1 snapshot), `docs/12-branch2.md`,
-`docs/13-partner-channel.md`; the older `docs/notes-*.md` explain the legacy
+`docs/13-partner-channel.md`, `docs/14-tcn-and-calibration.md`; the older `docs/notes-*.md` explain the legacy
 pipeline's problems.
 
 Real SynCAN data (ETAS/Bosch, extracted from `SynCAN-master.zip`) is on
@@ -185,7 +189,7 @@ covered only by synthetic/practice attacks (`data/synthetic.py`,
 
 ## Tools / Stack
 - Language: Python (models), pptxgenjs (slides, unrelated to pipeline).
-- Models: GRU (implemented), TCN (teammate, not merged), Branch 2 has no
+- Models: GRU (implemented), TCN (teammate-trained, `models/tcn_syncan_train1.pt`), Branch 2 has no
   learned model (limits only). scikit-learn is no longer a dependency.
 - Dataset: SynCAN (ETAS/Bosch) — real data on disk under `data/raw/` (see
   above); a schema-matching synthetic generator also exists
