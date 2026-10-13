@@ -36,6 +36,7 @@ evaluation runs shouldn't have to retrain from scratch every time.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import io
 import sys
 from pathlib import Path
@@ -71,7 +72,7 @@ from canids.data.syncan import TEST_FILES as SYNCAN_TEST_FILES
 from canids.data.synthetic import ATTACK_TYPES
 from canids.data.windowing import build_joint_vector, valid_forecast_ticks
 from canids.classify import (
-    DRIFT, FALSE_ALARM, FLOODING, FUZZING, PLATEAU, REPLAY, SUPPRESSION, type_accuracy, type_confusion,
+    DRIFT, FALSE_ALARM, FLOODING, FUZZING, PLATEAU, REPLAY, SUPPRESSION, tick_naming, type_accuracy, type_confusion,
 )
 from canids.detector import NormalStream, fit_detector
 from canids.evaluate import (
@@ -84,6 +85,7 @@ from canids.models.rate_limits import Branch2Model, fit_branch2
 from canids.relational import RelationalModel, fit_relational_from_frames
 from canids.report import format_final_summary
 from canids.runs import refine_alert_bounds
+from canids.profile import PipelineProfile, default_profile_path
 from canids.registry import build_registry
 
 
@@ -214,7 +216,7 @@ def main() -> None:
         help="skip Branch 2 (message-rate / plausibility limits) and the fused Branch 1 OR Branch 2 verdict",
     )
     parser.add_argument(
-        "--branch2-model-path", type=Path, default=Path("models") / "branch2_limits_syncan_train1.json",
+        "--branch2-model-path", type=Path, default=None,
         help="load previously fitted Branch 2 limits from here if the file exists; otherwise fit them on the normal CSV's "
         "training part (plus its validation part and the detector's extra normal CSVs) and save them here",
     )
@@ -222,6 +224,15 @@ def main() -> None:
         "--summary-only", action="store_true",
         help="print only the FINAL SUMMARY (confusion counts, event results, attack-type matrix, overall accuracy); "
         "the detailed tables are not shown",
+    )
+    parser.add_argument(
+        "--profile", type=Path, default=None,
+        help="the forecaster's pipeline profile (default configs/pipeline_<forecaster>.json; see canids/profile.py): model "
+        "path, calibration files, threshold policy, naming constants, alert refinement. Explicit options below override it. "
+        "Only used with --attack-source syncan.",
+    )
+    parser.add_argument(
+        "--no-refine", action="store_true", help="ignore the profile's alert start/stop refinement in the final summary",
     )
     parser.add_argument(
         "--refine-alerts", nargs=3, type=float, metavar=("ALPHA", "MAX_BACK", "TRIM"), default=None,
@@ -235,13 +246,13 @@ def main() -> None:
         help="do not use the partner-consistency evidence channel (relational.py) in the Branch 1 detector",
     )
     parser.add_argument(
-        "--relational-model-path", type=Path, default=Path("models") / "relational_syncan_train1.json",
+        "--relational-model-path", type=Path, default=None,
         help="load a previously fitted partner-consistency model from here if it exists; otherwise fit it on the normal "
         "CSV's training part (selecting signals on its validation part and the detector's extra normal CSVs) and save it",
     )
-    parser.add_argument("--detector-window", type=int, default=DETECTOR_WINDOW_TICKS)
+    parser.add_argument("--detector-window", type=int, default=None, help="default: the profile's window")
     parser.add_argument(
-        "--detector-target-alerts-per-min", type=float, default=DETECTOR_TARGET_ALERTS_PER_MINUTE,
+        "--detector-target-alerts-per-min", type=float, default=None,
         help="false-alarm budget the detector threshold is calibrated to, in alerts per minute of NORMAL traffic",
     )
     parser.add_argument(
@@ -267,6 +278,27 @@ def main() -> None:
         "predict_streaming pass per attack type",
     )
     args = parser.parse_args()
+
+    # the forecaster's own profile supplies every setting not given on the command line
+    profile_path = args.profile or default_profile_path(args.forecaster)
+    if args.attack_source == "syncan" and profile_path.exists():
+        profile = PipelineProfile.load(profile_path)
+        if profile.forecaster != args.forecaster:
+            raise SystemExit(f"profile {profile.name!r} is for the {profile.forecaster!r} forecaster, not {args.forecaster!r}")
+    else:
+        profile = PipelineProfile(name="built-in defaults", forecaster=args.forecaster, model_path="")
+    if args.model_path is None and profile.model_path:
+        args.model_path = Path(profile.model_path)
+    args.detector_window = args.detector_window if args.detector_window is not None else profile.window
+    if args.detector_target_alerts_per_min is None:
+        args.detector_target_alerts_per_min = profile.target_alerts_per_minute
+    if args.detector_extra_normal_csv is None and profile.calibration:
+        args.detector_extra_normal_csv = profile.calibration_csvs()
+    args.relational_model_path = args.relational_model_path or Path(profile.relational_model)
+    args.branch2_model_path = args.branch2_model_path or Path(profile.branch2_model)
+    if args.refine_alerts is None and profile.refine is not None and not args.no_refine:
+        args.refine_alerts = profile.refine
+    print(f"pipeline profile: {profile.name}", file=sys.stderr, flush=True)
     real_stdout = sys.stdout
     if args.summary_only:
         print("running the full evaluation (about 12 minutes); only the final summary will be printed...", flush=True)
@@ -395,6 +427,12 @@ def main() -> None:
             streams, window=args.detector_window,
             target_alerts_per_minute=args.detector_target_alerts_per_min, step=args.grid_step,
             relational=relational,
+            scale_percentile=profile.scale_percentile, frozen_percentile=profile.frozen_percentile,
+            staleness_margin=profile.staleness_margin,
+        )
+        detector = dataclasses.replace(
+            detector, smooth_lag=profile.smooth_lag_ticks, smooth_eps=profile.smooth_eps,
+            smooth_min_change=profile.smooth_min_change, flat_ticks=profile.plateau_flat_ticks,
         )
         print(
             f"detector: window={detector.window} ticks  tau={detector.tau:.3f}  calibrated on "
@@ -466,7 +504,11 @@ def main() -> None:
             f"ATTACK-TYPE labels for the {'fused' if fused else 'Branch 1'} alerts "
             "(rows = what really happened, columns = what we said)"
         )
-        counts = type_confusion(outputs, result.ground_truths, detector)
+        counts = type_confusion(
+            outputs, result.ground_truths, detector,
+            lookahead_ticks=profile.smooth_lookahead_ticks, min_share=profile.branch2_min_share,
+                flat_share=profile.plateau_flat_share, incident_gap_ticks=profile.incident_gap_ticks,
+        )
         cols = [SUPPRESSION, PLATEAU, DRIFT, REPLAY] + ([FLOODING, FUZZING] if fused else [])
         print(f"{'real attack':14s} " + " ".join(f"{c:>12s}" for c in cols))
         for row in [*outputs, FALSE_ALARM]:
@@ -512,12 +554,14 @@ def main() -> None:
         outputs = result.fused_outputs if fused_verdict else result.detector_outputs
         tick_metrics = result.fused_metrics if fused_verdict else result.detector_metrics
         event_metrics_list = result.fused_event_metrics if fused_verdict else result.detector_event_metrics
+        refined_flags = {}
         if args.refine_alerts is not None:
             alpha, back, trim = args.refine_alerts
             tick_metrics, event_metrics_list = [], []
             for attack_type, out in outputs.items():
                 score = out.detector.score if fused_verdict else out.score
                 flags = refine_alert_bounds(out.flags, score, detector.tau, alpha, int(back), int(trim), args.event_alert_merge_gap_ticks)
+                refined_flags[attack_type] = flags
                 gt = result.ground_truths[attack_type]
                 tick_metrics.append(detection_metrics(flags, gt, attack_type, 0.0))
                 event_metrics_list.append(
@@ -531,10 +575,19 @@ def main() -> None:
             format_final_summary(
                 tick_metrics,
                 event_metrics_list,
-                type_confusion(outputs, result.ground_truths, detector),
-                f"real SynCAN attack files, {args.forecaster.upper()} forecaster, "
+                type_confusion(
+                    outputs, result.ground_truths, detector,
+                    lookahead_ticks=profile.smooth_lookahead_ticks, min_share=profile.branch2_min_share,
+                flat_share=profile.plateau_flat_share, incident_gap_ticks=profile.incident_gap_ticks,
+                ),
+                f"real SynCAN attack files, {args.forecaster.upper()} forecaster [profile: {profile.name}], "
                 + ("Branch 1 OR Branch 2 (fused)" if fused_verdict else "Branch 1 only")
                 + (f", alert start/stop refined {tuple(args.refine_alerts)}" if args.refine_alerts is not None else ""),
+                tick_naming=tick_naming(
+                    outputs, result.ground_truths, detector, refined_flags or None,
+                    lookahead_ticks=profile.smooth_lookahead_ticks, min_share=profile.branch2_min_share,
+                flat_share=profile.plateau_flat_share, incident_gap_ticks=profile.incident_gap_ticks,
+                ),
             )
         )
 

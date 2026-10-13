@@ -168,6 +168,14 @@ class DetectorCalibration:
     jump_scales: np.ndarray | None = None
     # the partner-consistency model the "partner" channel uses; None = channel off
     relational: RelationalModel | None = None
+    # how smooth_one_way is applied in detect() (per-forecaster settings live in a profile.PipelineProfile)
+    smooth_lag: int = SMOOTH_LAG_TICKS
+    smooth_eps: float = SMOOTH_EPS
+    smooth_min_change: float = SMOOTH_MIN_CHANGE
+    # naming rule 2b ("the top-error signal has been unchanged for a whole window"): how many ticks count as flat;
+    # None = the detector's own window (the original behaviour). Independent so a shorter detector window does not
+    # silently weaken the plateau test.
+    flat_ticks: int | None = None
 
     def save(self, path: Path) -> None:
         payload = asdict(self)
@@ -288,5 +296,7 @@ def detect(
         top_signal=top_signal,
         top_signal_streak=top_signal_streak,
         jump_score=jump_score,
-        smooth_ramp=smooth_one_way(values).any(axis=1),
+        smooth_ramp=smooth_one_way(
+            values, lag=calibration.smooth_lag, eps=calibration.smooth_eps, min_change=calibration.smooth_min_change
+        ).any(axis=1),
     )

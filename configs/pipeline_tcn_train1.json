@@ -1,0 +1,29 @@
+{
+  "name": "tcn-train1 (older TCN, GRU's settings)",
+  "forecaster": "tcn",
+  "model_path": "models/tcn_syncan_train1.pt",
+  "calibration": [
+    {
+      "csv": "data/raw/syncan_train_2_long.csv",
+      "cache": "train2L"
+    },
+    {
+      "csv": "data/raw/syncan_train_3_long.csv",
+      "cache": "train3L"
+    }
+  ],
+  "relational_model": "models/relational_syncan_train1.json",
+  "branch2_model": "models/branch2_limits_syncan_train1.json",
+  "window": 50,
+  "target_alerts_per_minute": 0.1,
+  "scale_percentile": 99.9,
+  "frozen_percentile": 99.99,
+  "staleness_margin": 1.5,
+  "smooth_lag_ticks": 60,
+  "smooth_eps": 0.03,
+  "smooth_min_change": 0.02,
+  "smooth_lookahead_ticks": 360,
+  "branch2_min_share": 0.25,
+  "refine": null,
+  "notes": "The TCN trained on train_1 only, with the GRU's detector settings (untuned). Kept to reproduce the numbers in docs/14."
+}

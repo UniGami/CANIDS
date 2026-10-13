@@ -101,3 +101,67 @@ only apply the tail cut after the fact. Drift (0.75) and replay (0.80) tick reca
   not close to separating them) added as an extra plateau test, threshold chosen on first halves: TCN second-half naming
   0.849 -> 0.865-0.870 (1-2 alerts), GRU 0.901 -> 0.901. Not adopted. Picking the attacked signal by the partner channel
   separates worse (AUC 0.56). A classifier trained only on practice attacks is the untried next option.
+
+## One pipeline profile per forecaster (2026-10-13)
+Every model-specific setting now lives in one file per forecaster (`configs/pipeline_*.json`, `canids/profile.py`): model
+path, calibration normal files, window, false-alarm budget, yardstick percentiles, naming constants and alert refinement.
+`run_evaluation.py` / `summary_from_cache.py` load only the chosen forecaster's file (`--forecaster`, `--profile` to
+override); nothing is shared between the GRU and TCN pipelines except the forecaster-independent partner model and
+Branch 2 limits. Files: `pipeline_gru.json` (today's settings, reproduces 571/612 exactly), `pipeline_gru_tuned.json`,
+`pipeline_tcn_train1.json` (older TCN), `pipeline_tcn_untuned.json`, `pipeline_tcn.json` (all-data TCN, tuned).
+`scripts/tune_profile.py` chooses a profile's settings on the FIRST halves of the attack files (window x budget x yardstick
+percentile, then alert refinement; settings within 0.002 of the best first-half event F1 are separated by first-half naming
+accuracy) and reports the SECOND halves.
+
+All-data TCN (`models/tcn_syncan_all.pt`, trained by the partner on the first 80% of train_1..4), calibrated on the
+validation tails of train_1..4 (`scripts/extract_normal_slices.py --validation-tails`). With the GRU's settings it raised
+135 false-alarm alerts (101 from the forecast-error evidence; the GRU raises 10 of those and 22 of its 32 from the
+forecaster-independent partner channel). Second halves, tuned vs untuned: event strict F1 0.893 -> 0.986, false-alarm
+alerts 67 -> 5, tick precision 0.896 -> 0.967, tick recall 0.948 -> 0.904. The GRU, tuned the same way: event strict F1
+0.961 -> 0.977, false alarms 18 -> 8, tick precision 0.923 -> 0.992, recall 0.896 -> 0.863. Chosen settings: TCN window 25,
+budget 0.03/min, percentile 99.99, refinement (0.75, 100, 25); GRU window 50, budget 0.03/min, percentile 99.99, refinement
+(0.75, 100, 50). With percentile 99.99 the per-signal yardsticks sit at the largest normal evidence, so the budget no
+longer binds (0.000 alerts/min on the calibration data): the threshold is then tied to those maxima and results are
+sensitive to tiny numerical differences (a full run and the cache can differ by an alert or a few hundred ticks on a file).
+
+Whole attack files with each model's tuned profile (cache; the whole-file numbers are optimistic because the first halves
+chose the settings):
+- GRU: 536/545 found, tick P/R/F1 0.991/0.889/0.937, 10 false-alarm alerts, naming 568/611 = 93.0%
+  (tick-level naming 83.2% right, 5.7% wrong, 11.1% unflagged).
+- TCN: 539/545 found, tick P/R/F1 0.967/0.921/0.943, 7 false-alarm alerts, naming 574/653 = 87.9%
+  (tick-level naming 83.1% right, 9.0% wrong, 7.9% unflagged).
+The TCN's weak spot is naming: 44 of 157 replay alerts are called plateau, mostly through signals 11 and 14, which are
+naturally flat for long stretches (a replay of a flat stretch looks like a plateau on a flat signal). Tested and dropped: when
+the flat run began (AUC 0.34-0.57, no separation); decoupling the "flat" length from the detector window (replay naming up,
+plateau naming down, 85.5% overall).
+
+## Attack naming: whole-alert plateau test, chosen jointly with the detector (2026-10-13, later)
+Two naming settings were tried (per profile, `scripts/naming_split_check.py`; chosen on first halves, reported on
+second halves, no attack type allowed to lose more than 3 points on the first halves against the original rule):
+- **`plateau_flat_share`**: rule 2b ("the top-error signal is flat") must hold for this share of the alert's ticks instead
+  of at the single tick where the error peaks. GRU: 0.7 -> second-half naming 94.2% -> 95.5%, whole file 93.0% -> 94.1%.
+  TCN with window 25: every value is rejected by the guard (plateaus lose what replays gain); TCN with window 50:
+  0.7 passes -> second half 88.9% -> 90.2%, whole file 89.0% -> 91.0%.
+- **`incident_gap_ticks`** (name alerts that are close together as one incident, from all their evidence): no gain for either
+  model; left off.
+`tune_profile.py` now breaks detection ties (first-half event F1 within 0.002 of the best) by the best first-half naming each
+detector setting can reach with its own flat_share, which moved the TCN from window 25 to window 50: the two tied on
+detection (0.991 vs 0.990) and window 25 had won only on a tick-F1 tiebreak, while its naming was worse on the second half.
+
+Final profiles (whole attack files, from the cache; whole-file numbers are optimistic because first halves chose the settings,
+and a full run can differ by an alert or a few hundred ticks per file):
+
+| | GRU (`pipeline_gru_tuned.json`) | TCN (`pipeline_tcn.json`) |
+|---|---|---|
+| settings | window 50, 0.03/min, percentile 99.99, flat_share 0.7, refine (0.75,100,50) | window 50, 0.03/min, percentile 99.99, flat_share 0.7, refine (0.75,100,50) |
+| attacks found | 536 / 545 | 540 / 545 |
+| tick precision / recall / F1 | 0.991 / 0.889 / 0.937 | 0.975 / 0.923 / 0.948 |
+| false-alarm alerts | 10 | 11 |
+| naming, event level (alerts) | 575/611 = 94.1% | 573/630 = 91.0% |
+| naming, tick level (right / wrong / not flagged) | 84.2% / 4.7% / 11.1% | 85.1% / 7.1% / 7.7% |
+| naming per type, event level | plateau 80.8, drift 96.6, replay 93.3, suppression 100, flooding 100 | plateau 78.1, drift 89.2, replay 88.7, suppression 100, flooding 100 |
+
+Second halves (out of sample): GRU event strict F1 0.977, false alarms 8, tick F1 0.918; TCN event strict F1 0.978, false
+alarms 9, tick F1 0.934. Remaining gaps for both: plateau named replay (21 GRU / 26 TCN alerts: a plateau on a naturally flat
+signal looks like a replay of a flat stretch), and drift / replay tick recall (0.70-0.85: the start of a slow attack has no
+evidence yet).

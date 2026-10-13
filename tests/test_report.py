@@ -35,3 +35,11 @@ def test_summary_handles_attacks_with_no_alerts_without_crashing():
     events = [_event("plateau", 10, 9, 12, 2)]
     text = format_final_summary(ticks, events, {}, "empty")
     assert "0 of 0 attack alerts" in text
+
+
+def test_summary_prints_the_tick_level_naming_table_when_given():
+    ticks = [_tick("plateau", 80, 20, 20)]
+    events = [_event("plateau", 10, 9, 12, 2)]
+    text = format_final_summary(ticks, events, {}, "x", tick_naming={"plateau": (100, 70, 10, 20)})
+    assert "ATTACK-TYPE ACCURACY AT TICK LEVEL" in text
+    assert "0.700" in text and "0.100" in text and "0.200" in text and "0.875" in text  # 70/100, 10/100, 20/100, 70/80

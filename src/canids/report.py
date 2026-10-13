@@ -35,6 +35,7 @@ def format_final_summary(
     event_metrics: list[EventMetrics],
     type_counts: dict[tuple[str, str], int],
     title: str,
+    tick_naming: dict[str, tuple[int, int, int, int]] | None = None,
 ) -> str:
     """`tick_metrics` / `event_metrics` / `type_counts` are one verdict's results (e.g. the fused one)."""
     out: list[str] = []
@@ -102,4 +103,23 @@ def format_final_summary(
     out.append(
         f"   OVERALL TYPE ACCURACY (whole dataset): {ok_all} of {total_all} attack alerts named correctly = {_ratio(ok_all, total_all):.1%}"
     )
+    if tick_naming:
+        out.append("")
+        out.append("4) ATTACK-TYPE ACCURACY AT TICK LEVEL: of each attack's own ticks, how many sit inside an alert named with")
+        out.append("   the right type / a wrong type / no alert at all")
+        out.append("")
+        out.append(
+            f"   {'attack':14s} {'attack ticks':>12s} {'right name':>11s} {'wrong name':>11s} {'not flagged':>12s} {'named right, of flagged':>24s}"
+        )
+        tot = [0, 0, 0, 0]
+        for a, (n, r, w, m) in tick_naming.items():
+            tot = [tot[0] + n, tot[1] + r, tot[2] + w, tot[3] + m]
+            out.append(
+                f"   {a:14s} {n:12d} {_f(_ratio(r, n), 11)} {_f(_ratio(w, n), 11)} {_f(_ratio(m, n), 12)} {_f(_ratio(r, r + w), 24)}"
+            )
+        out.append("   " + "-" * 78)
+        out.append(
+            f"   {'ALL FILES':14s} {tot[0]:12d} {_f(_ratio(tot[1], tot[0]), 11)} {_f(_ratio(tot[2], tot[0]), 11)} "
+            f"{_f(_ratio(tot[3], tot[0]), 12)} {_f(_ratio(tot[1], tot[1] + tot[2]), 24)}"
+        )
     return "\n".join(out)

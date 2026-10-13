@@ -264,3 +264,19 @@ def test_calibration_with_a_relational_model_round_trips(tmp_path):
     np.testing.assert_allclose(loaded.scales["partner"], det.scales["partner"])
     s = _related_stream(seed=4)
     np.testing.assert_allclose(detect(loaded, s.residuals, s.staleness, s.values).score, detect(det, s.residuals, s.staleness, s.values).score)
+
+
+def test_smooth_settings_travel_with_the_calibration():
+    import dataclasses
+
+    from canids.detector import DetectorCalibration
+
+    rng = np.random.default_rng(0)
+    values = np.cumsum(np.full((600, 2), 0.001), axis=0)  # a perfectly smooth ramp on both signals
+    streams = [NormalStream(rng.normal(0, 0.01, (600, 2)), np.zeros((600, 2)), values)]
+    det = fit_detector(streams, window=10)
+    assert isinstance(det, DetectorCalibration)
+    out = detect(det, streams[0].residuals, streams[0].staleness, values)
+    assert out.smooth_ramp[-1]  # default settings see the ramp
+    strict = dataclasses.replace(det, smooth_min_change=10.0)  # a ramp must now move by 10: no ramp qualifies
+    assert not detect(strict, streams[0].residuals, streams[0].staleness, values).smooth_ramp.any()

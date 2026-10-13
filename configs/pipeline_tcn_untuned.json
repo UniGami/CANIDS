@@ -1,0 +1,33 @@
+{
+  "name": "tcn-all (untuned, GRU's settings)",
+  "forecaster": "tcn",
+  "model_path": "models/tcn_syncan_all.pt",
+  "calibration": [
+    {
+      "csv": "data/processed/syncan_train_2_val.csv",
+      "cache": "train2v"
+    },
+    {
+      "csv": "data/processed/syncan_train_3_val.csv",
+      "cache": "train3v"
+    },
+    {
+      "csv": "data/processed/syncan_train_4_val.csv",
+      "cache": "train4v"
+    }
+  ],
+  "relational_model": "models/relational_syncan_train1.json",
+  "branch2_model": "models/branch2_limits_syncan_train1.json",
+  "window": 50,
+  "target_alerts_per_minute": 0.1,
+  "scale_percentile": 99.9,
+  "frozen_percentile": 99.99,
+  "staleness_margin": 1.5,
+  "smooth_lag_ticks": 60,
+  "smooth_eps": 0.03,
+  "smooth_min_change": 0.02,
+  "smooth_lookahead_ticks": 360,
+  "branch2_min_share": 0.25,
+  "refine": null,
+  "notes": "The TCN trained on the first 80% of train_1..4 (scripts/train_tcn.py). Calibrated on train_1's validation tail + the validation tails of train_2..4 (data/processed/syncan_train_N_val.csv, scripts/extract_normal_slices.py --validation-tails): rows the model never trained on. Detector settings still the GRU's; scripts/tune_profile.py replaces this file with tuned settings."
+}

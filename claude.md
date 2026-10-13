@@ -198,3 +198,12 @@ covered only by synthetic/practice attacks (`data/synthetic.py`,
 - Testing: `pytest`, one test file per module under `tests/` (252 tests).
 - Saved artifacts in `models/`: `gru_syncan_train1.pt`,
   `relational_syncan_train1.json`, `branch2_limits_syncan_train1.json`.
+
+## Per-forecaster pipeline profiles
+Every model-specific setting (model path, calibration normal files, window, false-alarm budget, yardstick percentiles,
+naming constants, alert refinement) lives in `configs/pipeline_<name>.json` (`src/canids/profile.py`); a run loads only
+the chosen forecaster's file (`--forecaster gru|tcn`, `--profile PATH`). `scripts/tune_profile.py` chooses a profile on the
+FIRST halves of the attack files and reports the second halves; see `docs/14-tcn-and-calibration.md`. The all-data TCN is
+`models/tcn_syncan_all.pt`, calibrated on `data/processed/syncan_train_N_val.csv` (`scripts/extract_normal_slices.py
+--validation-tails`). The FINAL SUMMARY also prints attack naming at tick level. Naming settings (`plateau_flat_share`, `incident_gap_ticks`) are part
+of the profile; results with the final profiles: docs/14 (GRU naming 94.1%, TCN 91.0%, whole files).

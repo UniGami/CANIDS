@@ -148,3 +148,54 @@ def test_default_lookahead_is_one_smoothness_window():
     assert SMOOTH_LOOKAHEAD_TICKS == 6 * SMOOTH_LAG_TICKS
     out = _output(n=2000, signed=(300, 400), smooth_span=(400 + SMOOTH_LOOKAHEAD_TICKS - 20, 400 + SMOOTH_LOOKAHEAD_TICKS))
     assert classify_alerts(out, CAL)[0].label == DRIFT  # within the default lookahead
+
+
+def test_tick_naming_counts_right_wrong_and_unflagged_attack_ticks():
+    from canids.classify import tick_naming
+
+    gt = np.zeros(1000, dtype=bool)
+    gt[100:300] = True  # a 200-tick plateau attack
+    # frozen alert covers 100-199 (named plateau = right); a residual-only alert covers 220-259 (named replay = wrong);
+    # ticks 200-219 and 260-299 are in no alert
+    out = _output(frozen=(100, 200), signed=(220, 260))
+    n, right, wrong, missed = tick_naming({"plateau": out}, {"plateau": gt}, CAL)["plateau"]
+    assert (n, right, wrong, missed) == (200, 100, 40, 60)
+
+
+def test_tick_naming_with_refined_flags_extends_back_and_cuts_the_tail():
+    from canids.classify import tick_naming
+
+    gt = np.zeros(1000, dtype=bool)
+    gt[100:300] = True
+    out = _output(frozen=(120, 200))
+    refined = out.flags.copy()
+    refined[110:120] = True  # walked back: takes the label of the alert that follows
+    refined[190:200] = False  # tail cut
+    n, right, wrong, missed = tick_naming({"plateau": out}, {"plateau": gt}, CAL, {"plateau": refined})["plateau"]
+    assert (n, right, wrong, missed) == (200, 80, 0, 120)  # ticks 110-189 named right
+
+
+def test_flat_share_requires_the_top_signal_to_be_flat_for_most_of_the_alert():
+    n = 1000
+    out = _output(signed=(100, 200))
+    streak = np.zeros(n)
+    streak[150] = 500.0  # the top-error signal is flat at the peak tick only (the signed channel peaks at its first tick)
+    out.channel_scores["signed"][150] = 9.0
+    out.top_signal_streak = streak
+    assert classify_alerts(out, CAL)[0].label == PLATEAU  # original rule: judged at the peak tick
+    assert classify_alerts(out, CAL, flat_share=0.7)[0].label == REPLAY  # flat for 1 tick of 100: not a plateau
+    streak[100:200] = 500.0
+    assert classify_alerts(out, CAL, flat_share=0.7)[0].label == PLATEAU
+
+
+def test_incident_gap_names_close_fragments_together():
+    out = _output(signed=(100, 140))
+    out.channel_scores["signed"][300:340] = 5.0  # a second fragment 160 ticks later
+    out.channel_scores["frozen"][300:340] = 5.0  # ...which carries plateau evidence
+    out.flags = np.maximum(out.channel_scores["signed"], out.channel_scores["frozen"]) > TAU
+    alone = classify_alerts(out, CAL)
+    assert [a.label for a in alone] == [REPLAY, PLATEAU]
+    together = classify_alerts(out, CAL, incident_gap_ticks=300)
+    assert [a.label for a in together] == [PLATEAU, PLATEAU]  # one incident, named from all its evidence
+    apart = classify_alerts(out, CAL, incident_gap_ticks=100)  # gap too small to join them
+    assert [a.label for a in apart] == [REPLAY, PLATEAU]
