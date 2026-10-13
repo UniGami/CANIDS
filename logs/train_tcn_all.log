@@ -1,0 +1,207 @@
+device: cuda (NVIDIA GeForce GTX 1650)
+syncan_train_1.csv: train windows=1,242,035  val windows=310,469  (9s elapsed)
+  wrote validation tail C:\Users\sreen\CANIDS\data\processed\syncan_train_2_val.csv (1,483,487 rows)
+syncan_train_2.csv: train windows=1,242,035  val windows=310,468  (25s elapsed)
+  wrote validation tail C:\Users\sreen\CANIDS\data\processed\syncan_train_3_val.csv (1,483,487 rows)
+syncan_train_3.csv: train windows=1,242,035  val windows=310,468  (41s elapsed)
+  wrote validation tail C:\Users\sreen\CANIDS\data\processed\syncan_train_4_val.csv (1,483,487 rows)
+syncan_train_4.csv: train windows=1,242,035  val windows=310,470  (57s elapsed)
+TCN: 98644 params, receptive field 61 ticks (sequence_length=50); batch=512 lr=0.001 max_epochs=40 patience=6
+  epoch 1 step 2000/9704  42s
+  epoch 1 step 4000/9704  79s
+  epoch 1 step 6000/9704  116s
+  epoch 1 step 8000/9704  153s
+epoch 1/40  train=0.001489  val=0.000163  lr=1.00e-03  197s
+  epoch 2 step 2000/9704  37s
+  epoch 2 step 4000/9704  73s
+  epoch 2 step 6000/9704  110s
+  epoch 2 step 8000/9704  147s
+epoch 2/40  train=0.000136  val=0.000092  lr=1.00e-03  191s
+  epoch 3 step 2000/9704  37s
+  epoch 3 step 4000/9704  74s
+  epoch 3 step 6000/9704  112s
+  epoch 3 step 8000/9704  149s
+epoch 3/40  train=0.000103  val=0.000074  lr=1.00e-03  193s
+  epoch 4 step 2000/9704  38s
+  epoch 4 step 4000/9704  75s
+  epoch 4 step 6000/9704  113s
+  epoch 4 step 8000/9704  151s
+epoch 4/40  train=0.000092  val=0.000186  lr=1.00e-03  195s
+  epoch 5 step 2000/9704  37s
+  epoch 5 step 4000/9704  75s
+  epoch 5 step 6000/9704  112s
+  epoch 5 step 8000/9704  149s
+epoch 5/40  train=0.000080  val=0.000184  lr=1.00e-03  194s
+  epoch 6 step 2000/9704  38s
+  epoch 6 step 4000/9704  75s
+  epoch 6 step 6000/9704  112s
+  epoch 6 step 8000/9704  149s
+epoch 6/40  train=0.000077  val=0.000067  lr=1.00e-03  194s
+  epoch 7 step 2000/9704  37s
+  epoch 7 step 4000/9704  74s
+  epoch 7 step 6000/9704  112s
+  epoch 7 step 8000/9704  149s
+epoch 7/40  train=0.000074  val=0.000075  lr=1.00e-03  193s
+  epoch 8 step 2000/9704  37s
+  epoch 8 step 4000/9704  74s
+  epoch 8 step 6000/9704  112s
+  epoch 8 step 8000/9704  149s
+epoch 8/40  train=0.000069  val=0.000065  lr=1.00e-03  193s
+  epoch 9 step 2000/9704  37s
+  epoch 9 step 4000/9704  75s
+  epoch 9 step 6000/9704  112s
+  epoch 9 step 8000/9704  149s
+epoch 9/40  train=0.000068  val=0.000064  lr=1.00e-03  193s
+  epoch 10 step 2000/9704  37s
+  epoch 10 step 4000/9704  74s
+  epoch 10 step 6000/9704  111s
+  epoch 10 step 8000/9704  149s
+epoch 10/40  train=0.000063  val=0.000062  lr=1.00e-03  193s
+  epoch 11 step 2000/9704  37s
+  epoch 11 step 4000/9704  74s
+  epoch 11 step 6000/9704  111s
+  epoch 11 step 8000/9704  149s
+epoch 11/40  train=0.000059  val=0.000049  lr=1.00e-03  193s
+  epoch 12 step 2000/9704  37s
+  epoch 12 step 4000/9704  74s
+  epoch 12 step 6000/9704  112s
+  epoch 12 step 8000/9704  149s
+epoch 12/40  train=0.000057  val=0.000050  lr=1.00e-03  193s
+  epoch 13 step 2000/9704  37s
+  epoch 13 step 4000/9704  74s
+  epoch 13 step 6000/9704  111s
+  epoch 13 step 8000/9704  148s
+epoch 13/40  train=0.000058  val=0.000053  lr=1.00e-03  193s
+  epoch 14 step 2000/9704  37s
+  epoch 14 step 4000/9704  74s
+  epoch 14 step 6000/9704  111s
+  epoch 14 step 8000/9704  148s
+epoch 14/40  train=0.000054  val=0.000059  lr=5.00e-04  193s
+  epoch 15 step 2000/9704  37s
+  epoch 15 step 4000/9704  75s
+  epoch 15 step 6000/9704  112s
+  epoch 15 step 8000/9704  149s
+epoch 15/40  train=0.000045  val=0.000050  lr=5.00e-04  193s
+  epoch 16 step 2000/9704  37s
+  epoch 16 step 4000/9704  74s
+  epoch 16 step 6000/9704  111s
+  epoch 16 step 8000/9704  148s
+epoch 16/40  train=0.000044  val=0.000042  lr=5.00e-04  193s
+  epoch 17 step 2000/9704  37s
+  epoch 17 step 4000/9704  74s
+  epoch 17 step 6000/9704  111s
+  epoch 17 step 8000/9704  148s
+epoch 17/40  train=0.000043  val=0.000041  lr=5.00e-04  193s
+  epoch 18 step 2000/9704  37s
+  epoch 18 step 4000/9704  74s
+  epoch 18 step 6000/9704  112s
+  epoch 18 step 8000/9704  149s
+epoch 18/40  train=0.000042  val=0.000041  lr=5.00e-04  193s
+  epoch 19 step 2000/9704  37s
+  epoch 19 step 4000/9704  75s
+  epoch 19 step 6000/9704  112s
+  epoch 19 step 8000/9704  149s
+epoch 19/40  train=0.000042  val=0.000040  lr=5.00e-04  193s
+  epoch 20 step 2000/9704  12652s
+  epoch 20 step 4000/9704  12691s
+  epoch 20 step 6000/9704  12727s
+  epoch 20 step 8000/9704  32402s
+epoch 20/40  train=0.000041  val=0.000044  lr=5.00e-04  32446s
+  epoch 21 step 2000/9704  43s
+  epoch 21 step 4000/9704  85s
+  epoch 21 step 6000/9704  132s
+  epoch 21 step 8000/9704  170s
+epoch 21/40  train=0.000043  val=0.000042  lr=5.00e-04  213s
+  epoch 22 step 2000/9704  37s
+  epoch 22 step 4000/9704  73s
+  epoch 22 step 6000/9704  109s
+  epoch 22 step 8000/9704  145s
+epoch 22/40  train=0.000039  val=0.000036  lr=5.00e-04  189s
+  epoch 23 step 2000/9704  37s
+  epoch 23 step 4000/9704  73s
+  epoch 23 step 6000/9704  109s
+  epoch 23 step 8000/9704  145s
+epoch 23/40  train=0.000039  val=0.000036  lr=5.00e-04  189s
+  epoch 24 step 2000/9704  37s
+  epoch 24 step 4000/9704  73s
+  epoch 24 step 6000/9704  109s
+  epoch 24 step 8000/9704  146s
+epoch 24/40  train=0.000038  val=0.000037  lr=5.00e-04  190s
+  epoch 25 step 2000/9704  37s
+  epoch 25 step 4000/9704  74s
+  epoch 25 step 6000/9704  110s
+  epoch 25 step 8000/9704  147s
+epoch 25/40  train=0.000037  val=0.000036  lr=2.50e-04  192s
+  epoch 26 step 2000/9704  37s
+  epoch 26 step 4000/9704  74s
+  epoch 26 step 6000/9704  111s
+  epoch 26 step 8000/9704  148s
+epoch 26/40  train=0.000033  val=0.000034  lr=2.50e-04  192s
+  epoch 27 step 2000/9704  37s
+  epoch 27 step 4000/9704  74s
+  epoch 27 step 6000/9704  111s
+  epoch 27 step 8000/9704  148s
+epoch 27/40  train=0.000033  val=0.000034  lr=2.50e-04  193s
+  epoch 28 step 2000/9704  37s
+  epoch 28 step 4000/9704  74s
+  epoch 28 step 6000/9704  111s
+  epoch 28 step 8000/9704  149s
+epoch 28/40  train=0.000032  val=0.000033  lr=2.50e-04  193s
+  epoch 29 step 2000/9704  37s
+  epoch 29 step 4000/9704  74s
+  epoch 29 step 6000/9704  112s
+  epoch 29 step 8000/9704  149s
+epoch 29/40  train=0.000033  val=0.000037  lr=2.50e-04  193s
+  epoch 30 step 2000/9704  38s
+  epoch 30 step 4000/9704  77s
+  epoch 30 step 6000/9704  116s
+  epoch 30 step 8000/9704  156s
+epoch 30/40  train=0.000032  val=0.000034  lr=2.50e-04  204s
+  epoch 31 step 2000/9704  40s
+  epoch 31 step 4000/9704  80s
+  epoch 31 step 6000/9704  120s
+  epoch 31 step 8000/9704  160s
+epoch 31/40  train=0.000032  val=0.000034  lr=1.25e-04  208s
+  epoch 32 step 2000/9704  40s
+  epoch 32 step 4000/9704  80s
+  epoch 32 step 6000/9704  120s
+  epoch 32 step 8000/9704  160s
+epoch 32/40  train=0.000030  val=0.000033  lr=1.25e-04  207s
+  epoch 33 step 2000/9704  40s
+  epoch 33 step 4000/9704  80s
+  epoch 33 step 6000/9704  120s
+  epoch 33 step 8000/9704  160s
+epoch 33/40  train=0.000030  val=0.000036  lr=1.25e-04  207s
+  epoch 34 step 2000/9704  40s
+  epoch 34 step 4000/9704  80s
+  epoch 34 step 6000/9704  120s
+  epoch 34 step 8000/9704  160s
+epoch 34/40  train=0.000030  val=0.000035  lr=6.25e-05  208s
+saved C:\Users\sreen\CANIDS\models\tcn_syncan_all.pt  (best val_loss=0.000033 at epoch 28, 34 epochs, 648.4 min)
+
+scoring on held-out normal driving syncan_test_normal.csv (never fitted on) ...
+  TCN (all files)      mean MSE = 0.000162
+  TCN (train_1 only)   mean MSE = 0.000647
+  GRU (train_1 only)   mean MSE = 0.001844
+
+signal            TCN (all files)   TCN (train_1 only)   GRU (train_1 only)
+id1_sig1                 0.000001             0.000017             0.000070
+id1_sig2                 0.000080             0.000262             0.000531
+id10_sig1                0.000002             0.000005             0.000039
+id10_sig2                0.002840             0.011365             0.014291
+id10_sig3                0.000001             0.000043             0.000052
+id10_sig4                0.000002             0.000007             0.000042
+id2_sig1                 0.000001             0.000006             0.000023
+id2_sig2                 0.000001             0.000017             0.000064
+id2_sig3                 0.000001             0.000007             0.000026
+id3_sig1                 0.000137             0.000291             0.000333
+id3_sig2                 0.000001             0.000027             0.000030
+id4_sig1                 0.000004             0.000015             0.000037
+id5_sig1                 0.000002             0.000011             0.000038
+id5_sig2                 0.000002             0.000037             0.000039
+id6_sig1                 0.000004             0.000042             0.000064
+id6_sig2                 0.000047             0.000418             0.020591
+id7_sig1                 0.000001             0.000006             0.000024
+id7_sig2                 0.000117             0.000359             0.000508
+id8_sig1                 0.000001             0.000009             0.000029
+id9_sig1                 0.000004             0.000007             0.000047

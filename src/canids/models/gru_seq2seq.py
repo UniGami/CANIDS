@@ -202,12 +202,16 @@ def _batched_eval_loss(
     if len(ticks) == 0:
         return float("nan")
     model.eval()
+    device = next(model.parameters()).device
     total_loss = 0.0
     with torch.no_grad():
         for start in range(0, len(ticks), batch_size):
             batch_ticks = ticks[start : start + batch_size]
             xb, yb = gather_forecast_batch(joint_vector, registry, batch_ticks, sequence_length)
-            loss = loss_fn(model(torch.tensor(xb, dtype=torch.float32)), torch.tensor(yb, dtype=torch.float32))
+            loss = loss_fn(
+                model(torch.tensor(xb, dtype=torch.float32, device=device)),
+                torch.tensor(yb, dtype=torch.float32, device=device),
+            )
             total_loss += loss.item() * len(batch_ticks)
     return total_loss / len(ticks)
 
@@ -234,12 +238,13 @@ def predict_streaming(
         empty = np.empty((0, registry.n_signals))
         return empty, empty
     model.eval()
+    device = next(model.parameters()).device  # runs on the GPU if the model lives there
     all_y, all_pred = [], []
     with torch.no_grad():
         for start in range(0, len(ticks), batch_size):
             batch_ticks = ticks[start : start + batch_size]
             xb, yb = gather_forecast_batch(joint_vector, registry, batch_ticks, sequence_length)
-            pred = model(torch.tensor(xb, dtype=torch.float32)).numpy()
+            pred = model(torch.tensor(xb, dtype=torch.float32, device=device)).cpu().numpy()
             all_y.append(yb)
             all_pred.append(pred)
     return np.concatenate(all_y, axis=0), np.concatenate(all_pred, axis=0)

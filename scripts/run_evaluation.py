@@ -137,9 +137,9 @@ def main() -> None:
         help="load a previously-trained model from here if it exists; otherwise train fresh and save it here",
     )
     parser.add_argument(
-        "--model-type", choices=["gru", "tcn"], default="gru",
-        help="which Branch 1 forecaster --model-path holds. 'tcn' only loads a checkpoint written by "
-        "scripts/train_tcn.py (it never trains one here); everything downstream is identical.",
+        "--device", default=None,
+        help='device for a --forecaster tcn model: "cuda", "cpu" or "auto" (default: stay on CPU). Forecast '
+        "inference is the slow part of an evaluation run, so the GPU helps here too.",
     )
     parser.add_argument(
         "--forecaster", choices=["gru", "tcn"], default="gru",
@@ -260,19 +260,13 @@ def main() -> None:
     val_joint = build_joint_vector(val_alignment, registry)
 
     _print_header("Model")
-    if args.model_type == "tcn":
-        if not (args.model_path and args.model_path.exists()):
-            raise SystemExit("--model-type tcn needs an existing --model-path checkpoint (train with scripts/train_tcn.py)")
-        print(f"loading TCN from {args.model_path}")
-        model = tcn.load_model(args.model_path)
-    elif args.model_path and args.model_path.exists():
     if args.forecaster == "tcn":
         if args.model_path is None:
             args.model_path = Path("models") / "tcn_syncan_train1.pt"
         if not args.model_path.exists():
             raise SystemExit(f"TCN checkpoint not found: {args.model_path} (train one with scripts/train_tcn.py)")
-        print(f"loading TCN from {args.model_path}")
-        model = tcn_module.load_model(args.model_path)
+        print(f"loading TCN from {args.model_path} (device={args.device})")
+        model = tcn.load_model(args.model_path, device=args.device)
     elif args.model_path and args.model_path.exists():
         print(f"loading model from {args.model_path}")
         model = load_model(args.model_path)
