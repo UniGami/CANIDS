@@ -61,6 +61,35 @@ def test_early_stopping_and_batch_cap(tmp_path):
     assert len(history.train_loss) == 1 + 3
 
 
+def test_multi_file_windows_never_cross_file_boundaries(tmp_path):
+    from canids.models.tcn import _ResidentData
+
+    registry, train_joint, val_joint = _joints(tmp_path)
+    data = _ResidentData([train_joint, val_joint], registry, 10, torch.device("cpu"))
+    n_train = len(train_joint)
+    # every target tick's whole 10-tick context must sit inside ONE of the two files
+    for t in (data.ticks[0], data.ticks[len(data.ticks) // 2], data.ticks[-1]):
+        in_first = t < n_train
+        lo, hi = (0, n_train) if in_first else (n_train, n_train + len(val_joint))
+        assert t - 10 >= lo and t < hi
+    assert not np.isnan(data.batch(data.ticks[:64])[0].numpy()).any()
+    # a window gathered from the second file equals the same window from the original array
+    t_second = int(data.ticks[-1])
+    x, _ = data.batch(np.array([t_second]))
+    np.testing.assert_allclose(x[0].numpy(), val_joint[t_second - n_train - 10 : t_second - n_train], rtol=1e-6)
+
+
+def test_train_streaming_accepts_a_list_of_files_and_explicit_device(tmp_path):
+    registry, train_joint, val_joint = _joints(tmp_path)
+    model = TCNForecaster(vector_size=registry.vector_size, n_signals=registry.n_signals, channels=8)
+    history = train_streaming(
+        model, registry, [train_joint, train_joint[: len(train_joint) // 2]], [val_joint],
+        sequence_length=10, epochs=3, batch_size=32, seed=1, device="cpu",
+    )
+    assert len(history.train_loss) == 3
+    assert history.train_loss[-1] < history.train_loss[0]
+
+
 def test_save_load_roundtrip_and_predict_streaming(tmp_path):
     registry, train_joint, val_joint = _joints(tmp_path)
     model = TCNForecaster(vector_size=registry.vector_size, n_signals=registry.n_signals, channels=8)

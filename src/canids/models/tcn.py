@@ -11,14 +11,17 @@ SEQUENCE_LENGTH of 50. Chosen over a Transformer per claude.md: SynCAN's
 normal-only training data is limited, and a Transformer overfits more at
 this scale.
 
-The streaming helpers (predict_streaming, residuals, TrainingHistory) are
+The inference helpers (predict_streaming, residuals, TrainingHistory) are
 model-agnostic and reused straight from gru_seq2seq so both models are
-trained/evaluated through the exact same code path.
+trained/evaluated through the exact same code path. predict_streaming runs
+on whatever device the model is on.
 """
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 import torch
@@ -40,10 +43,9 @@ from canids.config import (
     TCN_WEIGHT_DECAY,
     TRAINING_EPOCHS,
 )
-from canids.data.windowing import gather_forecast_batch, valid_forecast_ticks
+from canids.data.windowing import valid_forecast_ticks
 from canids.models.gru_seq2seq import (
     TrainingHistory,
-    _batched_eval_loss,
     predict_streaming,  # noqa: F401  (re-exported: same contract, model-agnostic)
 )
 from canids.registry import Registry
@@ -112,11 +114,69 @@ class TCNForecaster(nn.Module):
         return self.head(h[:, :, -1])  # last tick's features -> (batch, n_signals)
 
 
+def resolve_device(device: str | torch.device | None) -> torch.device | None:
+    """None -> leave the model where it is; "auto" -> cuda if available else cpu."""
+    if device is None:
+        return None
+    if device == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return torch.device(device)
+
+
+class _ResidentData:
+    """One or more joint vectors (one per source file) held as a single
+    float32 tensor on the training device, with the valid target ticks of
+    every file mapped into the concatenated index space. Batches are gathered
+    on the device itself, so the only per-step host work is slicing the tick
+    permutation.
+
+    Concatenating is safe because every valid target tick of file k has its
+    whole `sequence_length` context inside file k (valid_forecast_ticks
+    starts after file k's own warm-up prefix), so no window ever straddles
+    two files.
+    """
+
+    def __init__(
+        self, joints: np.ndarray | Sequence[np.ndarray], registry: Registry, sequence_length: int, device: torch.device
+    ):
+        if isinstance(joints, np.ndarray):
+            joints = [joints]
+        ticks, offset = [], 0
+        for joint in joints:
+            ticks.append(valid_forecast_ticks(joint, sequence_length) + offset)
+            offset += len(joint)
+        self.ticks = np.concatenate(ticks) if ticks else np.empty(0, dtype=int)
+        self.data = torch.from_numpy(np.concatenate([j.astype(np.float32) for j in joints])).to(device)
+        self.sequence_length = sequence_length
+        self.device = device
+        self.value_cols = torch.tensor([e.value_index for e in registry.entries], device=device)
+        self._offsets = torch.arange(sequence_length, device=device)
+
+    def batch(self, batch_ticks: np.ndarray) -> tuple[torch.Tensor, torch.Tensor]:
+        t = torch.from_numpy(np.ascontiguousarray(batch_ticks)).to(self.device)
+        x = self.data[(t - self.sequence_length)[:, None] + self._offsets[None, :]]
+        y = self.data[t][:, self.value_cols]
+        return x, y
+
+
+def _eval_loss(model: nn.Module, data: _ResidentData, batch_size: int, loss_fn: nn.Module) -> float:
+    if len(data.ticks) == 0:
+        return float("nan")
+    model.eval()
+    total = torch.zeros((), device=data.device)
+    with torch.no_grad():
+        for start in range(0, len(data.ticks), batch_size):
+            ticks = data.ticks[start : start + batch_size]
+            x, y = data.batch(ticks)
+            total += loss_fn(model(x), y) * len(ticks)
+    return float(total.item()) / len(data.ticks)
+
+
 def train_streaming(
     model: TCNForecaster,
     registry: Registry,
-    train_joint: np.ndarray,
-    val_joint: np.ndarray,
+    train_joint: np.ndarray | Sequence[np.ndarray],
+    val_joint: np.ndarray | Sequence[np.ndarray],
     sequence_length: int = SEQUENCE_LENGTH,
     epochs: int = TRAINING_EPOCHS,
     batch_size: int = BATCH_SIZE,
@@ -129,31 +189,41 @@ def train_streaming(
     lr_patience: int = TCN_LR_PATIENCE,
     max_train_batches_per_epoch: int | None = None,
     verbose: bool = False,
+    device: str | torch.device | None = None,
+    log_every: int | None = None,
 ) -> TrainingHistory:
-    """Same on-demand-batch loop as gru_seq2seq.train_streaming (never
-    materializes the windowed dataset), plus the TCN recipe: AdamW weight
-    decay, ReduceLROnPlateau on val loss, gradient clipping, and restoring
-    the best-val-loss weights at the end.
+    """On-demand-batch training (never materializes the windowed dataset)
+    with the TCN recipe: AdamW weight decay, ReduceLROnPlateau on val loss,
+    gradient clipping, and restoring the best-val-loss weights at the end.
+
+    train_joint / val_joint may each be ONE joint vector or a list of them
+    (one per source file, e.g. several SynCAN train files); windows never
+    cross file boundaries and the val loss is pooled over all val files.
+
+    device: None keeps the model where it is; "auto"/"cuda"/"cpu" moves it.
+    The joint vectors are copied to that device once, so GPU training is not
+    bottlenecked on host-side window gathering.
 
     max_train_batches_per_epoch: if set, each epoch trains on that many
-    random batches instead of every window. Consecutive ticks at a 10 ms grid
-    are near-duplicate windows, so a full pass over millions of windows is
-    far more compute than convergence needs; sub-sampling keeps an "epoch"
-    (and early stopping / LR scheduling cadence) tractable on CPU. None runs
-    every window, matching the GRU's behavior.
+    random batches instead of every window (consecutive ticks at a 10 ms grid
+    are near-duplicate windows). None runs every window.
     """
-    import time
+    dev = resolve_device(device)
+    if dev is not None:
+        model.to(dev)
+    dev = next(model.parameters()).device
 
     torch.manual_seed(seed)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=lr_patience)
     loss_fn = nn.MSELoss()
 
-    train_ticks = valid_forecast_ticks(train_joint, sequence_length)
-    val_ticks = valid_forecast_ticks(val_joint, sequence_length)
-    if len(train_ticks) == 0:
+    train = _ResidentData(train_joint, registry, sequence_length, dev)
+    val = _ResidentData(val_joint, registry, sequence_length, dev)
+    if len(train.ticks) == 0:
         raise ValueError("no valid training windows -- train_joint is shorter than sequence_length, or entirely NaN")
 
+    eval_batch = max(batch_size, 4096)
     rng = np.random.default_rng(seed)
     history = TrainingHistory()
     best_val_loss = float("inf")
@@ -163,25 +233,25 @@ def train_streaming(
     for epoch in range(epochs):
         t0 = time.time()
         model.train()
-        perm = rng.permutation(train_ticks)
+        perm = rng.permutation(train.ticks)
         if max_train_batches_per_epoch is not None:
             perm = perm[: max_train_batches_per_epoch * batch_size]
-        epoch_loss = 0.0
-        for start in range(0, len(perm), batch_size):
+        epoch_loss = torch.zeros((), device=dev)
+        for step, start in enumerate(range(0, len(perm), batch_size), start=1):
             batch_ticks = perm[start : start + batch_size]
-            xb, yb = gather_forecast_batch(train_joint, registry, batch_ticks, sequence_length)
-            xb_t = torch.tensor(xb, dtype=torch.float32)
-            yb_t = torch.tensor(yb, dtype=torch.float32)
-            optimizer.zero_grad()
-            loss = loss_fn(model(xb_t), yb_t)
+            x, y = train.batch(batch_ticks)
+            optimizer.zero_grad(set_to_none=True)
+            loss = loss_fn(model(x), y)
             loss.backward()
             if grad_clip is not None:
                 clip_grad_norm_(model.parameters(), grad_clip)
             optimizer.step()
-            epoch_loss += loss.item() * len(batch_ticks)
-        history.train_loss.append(epoch_loss / len(perm))
+            epoch_loss += loss.detach() * len(batch_ticks)
+            if log_every and step % log_every == 0:
+                print(f"  epoch {epoch + 1} step {step}/{-(-len(perm) // batch_size)}  {time.time() - t0:.0f}s", flush=True)
+        history.train_loss.append(float(epoch_loss.item()) / len(perm))
 
-        val_loss = _batched_eval_loss(model, registry, val_joint, val_ticks, sequence_length, batch_size, loss_fn)
+        val_loss = _eval_loss(model, val, eval_batch, loss_fn)
         history.val_loss.append(val_loss)
         scheduler.step(val_loss)
         if verbose:
@@ -208,9 +278,10 @@ def train_streaming(
 
 def predict(model: TCNForecaster, X: np.ndarray) -> np.ndarray:
     model.eval()
+    device = next(model.parameters()).device
     with torch.no_grad():
-        pred = model(torch.tensor(X, dtype=torch.float32))
-    return pred.numpy()
+        pred = model(torch.tensor(X, dtype=torch.float32, device=device))
+    return pred.cpu().numpy()
 
 
 def residuals(model: TCNForecaster, X: np.ndarray, y: np.ndarray) -> np.ndarray:
@@ -222,7 +293,7 @@ def save_model(model: TCNForecaster, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
-            "state_dict": model.state_dict(),
+            "state_dict": {k: v.detach().cpu() for k, v in model.state_dict().items()},
             "vector_size": model.vector_size,
             "n_signals": model.n_signals,
             "channels": model.channels,
@@ -234,8 +305,8 @@ def save_model(model: TCNForecaster, path: Path) -> None:
     )
 
 
-def load_model(path: Path) -> TCNForecaster:
-    checkpoint = torch.load(path, weights_only=True)
+def load_model(path: Path, device: str | torch.device | None = None) -> TCNForecaster:
+    checkpoint = torch.load(path, weights_only=True, map_location="cpu")
     model = TCNForecaster(
         vector_size=checkpoint["vector_size"],
         n_signals=checkpoint["n_signals"],
@@ -245,5 +316,8 @@ def load_model(path: Path) -> TCNForecaster:
         dropout=checkpoint["dropout"],
     )
     model.load_state_dict(checkpoint["state_dict"])
+    dev = resolve_device(device)
+    if dev is not None:
+        model.to(dev)
     model.eval()
     return model

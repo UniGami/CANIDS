@@ -152,6 +152,11 @@ def main() -> None:
         help="load a previously-trained model from here if it exists; otherwise train fresh and save it here",
     )
     parser.add_argument(
+        "--device", default=None,
+        help='device for a --forecaster tcn model: "cuda", "cpu" or "auto" (default: stay on CPU). Forecast '
+        "inference is the slow part of an evaluation run, so the GPU helps here too.",
+    )
+    parser.add_argument(
         "--forecaster", "--model-type", dest="forecaster", choices=["gru", "tcn"], default="gru",
         help="which Branch 1 forecaster to evaluate. 'tcn' loads a trained TCN checkpoint (default "
         "models/tcn_syncan_train1.pt; train one with scripts/train_tcn.py) and runs the identical downstream pipeline: "
@@ -283,8 +288,8 @@ def main() -> None:
             args.model_path = Path("models") / "tcn_syncan_train1.pt"
         if not args.model_path.exists():
             raise SystemExit(f"TCN checkpoint not found: {args.model_path} (train one with scripts/train_tcn.py)")
-        print(f"loading TCN from {args.model_path}")
-        model = tcn.load_model(args.model_path)
+        print(f"loading TCN from {args.model_path} (device={args.device})")
+        model = tcn.load_model(args.model_path, device=args.device)
     elif args.model_path and args.model_path.exists():
         print(f"loading model from {args.model_path}")
         model = load_model(args.model_path)

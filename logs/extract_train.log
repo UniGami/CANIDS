@@ -1,0 +1,18 @@
+extracting train_2 ...
+  -> C:\Users\sreen\CANIDS\data\raw\syncan_train_2.csv  (7,417,431 rows, 15526.1s span)
+
+Done.
+Example:
+  python scripts/run_detector.py --normal-csv C:\Users\sreen\CANIDS\data\raw\syncan_train_2.csv --test-csv C:\Users\sreen\CANIDS\data\raw\syncan_test_replay.csv
+extracting train_3 ...
+  -> C:\Users\sreen\CANIDS\data\raw\syncan_train_3.csv  (7,417,431 rows, 15526.1s span)
+
+Done.
+Example:
+  python scripts/run_detector.py --normal-csv C:\Users\sreen\CANIDS\data\raw\syncan_train_3.csv --test-csv C:\Users\sreen\CANIDS\data\raw\syncan_test_replay.csv
+extracting train_4 ...
+  -> C:\Users\sreen\CANIDS\data\raw\syncan_train_4.csv  (7,417,434 rows, 15526.1s span)
+
+Done.
+Example:
+  python scripts/run_detector.py --normal-csv C:\Users\sreen\CANIDS\data\raw\syncan_train_4.csv --test-csv C:\Users\sreen\CANIDS\data\raw\syncan_test_replay.csv
