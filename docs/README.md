@@ -15,9 +15,10 @@ where they were actually caught (usually by a test), not smoothed over.
 - [08-attribution-layer.md](08-attribution-layer.md) — Step 9: `attribution/rules.py`.
 - [09-evaluation.md](09-evaluation.md) — Step 13: `evaluate.py`.
 
-Step 10 (TCN, a teammate's branch) will get its own file here as
-they're implemented — Step 13 landed out of order, prompted by a real-data
-false-positive finding that needed proper measurement tooling to chase down.
+Step 10 (TCN, a teammate's work) and the later steps 18-20 are written up in
+[14-tcn-and-calibration.md](14-tcn-and-calibration.md) — Step 13 landed out of order, prompted by a real-data
+false-positive finding that needed proper measurement tooling to chase down. The result files of every run are in
+[../results/](../results/README.md).
 
 ## Cross-cutting notes
 
@@ -52,4 +53,4 @@ already-built pieces.
 - `11-real-data-results.md` — real SynCAN results in one place: tick-level, event-level, old-vs-new comparison, and attack-type labels, with how they were produced and caveats.
 - `12-branch2.md` — Branch 2 (message-rate / plausibility limits), fusion (Branch 1 OR Branch 2), flooding/fuzzing labels, real and practice results, and why the Isolation Forest it started with was dropped.
 - `13-partner-channel.md` — partner-consistency evidence channel (signals vs their cross-ID partners): drift tick recall 0.565 -> 0.737, the criteria set beforehand and the two narrow misses, costs and caveats.
-- `14-tcn-and-calibration.md` — TCN through the same pipeline; why its false alarms were 3.5x the GRU's (too little varied normal data for the detector's calibration), the fix (35-min train_2/train_3 slices), results for both models, what stayed below 95%.
+- `14-tcn-and-calibration.md` — the final write-up: TCN through the same pipeline; why its false alarms were 3.5x the GRU's (the detector's calibration data was too narrow); the fixes (more normal calibration data, one tuned settings file per forecaster, alert start/stop refinement, a stricter plateau test); the honesty rules (settings chosen on first halves, reported on second halves); final tick-level / event-level / naming results for the GRU and the all-data TCN; what was tried and dropped; known limits; how to reproduce. Result files: `../results/`.

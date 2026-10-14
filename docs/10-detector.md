@@ -1,5 +1,7 @@
 # Step 10a — Stage-1 windowed detector (`detector.py`)
 
+> **Later update (2026-10-14):** the numbers in this note are the GRU-era snapshot of that step. The final results (both forecasters, per-model tuning, attack naming) are in [14-tcn-and-calibration.md](14-tcn-and-calibration.md) and `../results/`.
+
 **Status:** implemented, tested (`tests/test_detector.py`), run on all 5 real
 SynCAN attack files. Detection only — attack-*type* attribution is not part of
 this step (see "Open" below).

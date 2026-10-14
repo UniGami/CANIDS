@@ -1,5 +1,7 @@
 # Real SynCAN results: tick-level, event-level and attack-type labels
 
+> **Later update (2026-10-14):** the numbers in this note are the GRU-era snapshot of that step. The final results (both forecasters, per-model tuning, attack naming) are in [14-tcn-and-calibration.md](14-tcn-and-calibration.md) and `../results/`.
+
 > **Snapshot of Branch 1 only** (before Branch 2 and before the partner-consistency channel, `13-partner-channel.md`). For the fused Branch 1 OR Branch 2 results, including a real
 > label for flooding (118/118) and the overall 587/627 type accuracy, see `12-branch2.md`.
 

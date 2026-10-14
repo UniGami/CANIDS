@@ -1,0 +1,43 @@
+running the full evaluation (about 12 minutes); only the final summary will be printed...
+
+====================================================================================================
+FINAL SUMMARY -- real SynCAN attack files, Branch 1 OR Branch 2 (fused)
+====================================================================================================
+
+1) TICK LEVEL (one tick = 0.01 s): confusion counts per attack file
+
+   attack               TP        FP        TN        FN   precision  recall     F1  accuracy*
+   plateau           70144      9333    367241      3277       0.883   0.955  0.918      0.972
+   drift             44350      4687    385148     15811       0.904   0.737  0.812      0.954
+   replay            49714      4513    386279      9488       0.917   0.840  0.877      0.969
+   suppression       79409      7610    362670       305       0.913   0.996  0.953      0.982
+   flooding          74099      6061    369830         5       0.924   1.000  0.961      0.987
+   --------------------------------------------------------------------------------------------------
+   ALL FILES        317716     32204   1871168     28886       0.908   0.917  0.912      0.973
+   * accuracy = (TP+TN)/all ticks. About 85% of ticks are normal, so it flatters any detector that flags little;
+     read precision / recall / F1 for how well the attacks themselves are found.
+
+2) EVENT LEVEL: each attack interval and each alert counts once
+
+   attack         attacks  found  alerts  false  FA/min   strict prec  recall  strict F1
+   plateau            116    114     135     18   0.287         0.867   0.983      0.921
+   drift               96     92     128     11   0.169         0.898   0.958      0.927
+   replay              93     92     148      8   0.123         0.932   0.989      0.960
+   suppression        122    122     130      8   0.130         0.938   1.000      0.968
+   flooding           118    118     124      6   0.096         0.952   1.000      0.975
+   --------------------------------------------------------------------------------------------------
+   ALL FILES          545    538     665     51   -> 538 of 545 attacks found = 98.7% ; 614 of 665 alerts overlap an attack
+
+3) ATTACK-TYPE CONFUSION MATRIX: rows = what really happened, columns = what the system said
+   (counts alerts that overlap an attack; the last row is alerts that overlap none)
+
+   real attack     suppression      plateau        drift       replay     flooding      fuzzing    correct  accuracy
+   plateau                   0          101            0           14            0            2    101/117     0.863
+   drift                     0            2          107            8            0            0    107/117     0.915
+   replay                    0           13            4          123            0            0    123/140     0.879
+   suppression             122            0            0            0            0            0    122/122     1.000
+   flooding                  0            0            0            0          118            0    118/118     1.000
+   -----------------------------------------------------------------------------------------------------------------
+   false alarm               0            8            1           42            0            0
+
+   OVERALL TYPE ACCURACY (whole dataset): 571 of 614 attack alerts named correctly = 93.0%

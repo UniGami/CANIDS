@@ -2,10 +2,12 @@
 
 ## Context
 
-> **Status note (2026-10-11):** this file started as the bootstrap plan and is now the live roadmap. Everything
-> below up to Step 13 is built except Step 10 (TCN, in progress by a teammate on the `tcn` branch). Work that was
-> NOT in the original plan (the windowed detector and attack-type labeller, practice-attack tests, the partner-
-> consistency channel, the final summary report) is listed as Steps 14-17. Branch 2 was built as an Isolation
+> **Status note (2026-10-14):** this file started as the bootstrap plan and is now the live roadmap. **All steps are
+> done.** Step 10 (TCN) was trained by a teammate and is evaluated through the same pipeline; Steps 18-20 (calibration
+> data, per-forecaster profiles and tuning, attack-naming improvements) are written up in
+> `docs/14-tcn-and-calibration.md`, with the result files in `results/`. Work that was NOT in the original plan (the
+> windowed detector and attack-type labeller, practice-attack tests, the partner-consistency channel, the final summary
+> report) is listed as Steps 14-17. Branch 2 was built as an Isolation
 > Forest, tested, and **dropped** in favour of message-rate / plausibility limits (Step 11, `docs/12-branch2.md`).
 > The paragraphs below are the original text, kept for history.
 
@@ -70,8 +72,9 @@ each step lands.
 - [x] Step 7 — Branch 1 baseline model chain
 - [x] Step 8 — Threshold calibration (`calibration.py`)
 - [x] Step 9 — Attribution layer (`attribution/rules.py`)
-- [ ] Step 10 — TCN final model (`models/tcn.py`) -- teammate, `tcn` branch, not merged;
-      after the merge every check below must be rerun on the TCN's residuals
+- [x] Step 10 — TCN final model (`models/tcn.py`, `scripts/train_tcn.py`) -- trained by a teammate, first on train_1
+      (`models/tcn_syncan_train1.pt`), then on all four train files (`models/tcn_syncan_all.pt`); evaluated through the
+      same pipeline (`--forecaster tcn`), results in docs/14 and `results/`
 - [x] Step 11 — Branch 2: message-rate / plausibility limits (`models/rate_limits.py`,
       `rate_features.py`). Originally "Isolation Forest": built, tested, found to add no
       detection beyond the limits, and dropped (docs/12-branch2.md)
@@ -88,7 +91,18 @@ each step lands.
 - [x] Step 16 — Partner-consistency evidence channel (`relational.py`): drift tick recall
       0.565 -> 0.737 (docs/13-partner-channel.md)
 - [x] Step 17 — Final summary report (`report.py`, `run_evaluation.py --summary-only`)
-- [ ] Remaining: TCN merge + re-evaluation (Step 10); known gaps listed in CLAUDE.md
+- [x] Step 18 — TCN integration and the detector's calibration data: extra normal files (35-minute train_2/train_3
+      slices; validation tails of train_1..4 for the all-data TCN), cache tooling (`cache_gru_outputs.py`,
+      `summary_from_cache.py`, `cache_eval.py`), why the TCN raised 3x the GRU's false alarms (docs/14 sections 3-4)
+- [x] Step 19 — One pipeline profile per forecaster (`profile.py`, `configs/pipeline_*.json`) and per-model tuning on
+      first halves / reporting on second halves (`tune_profile.py`); alert start/stop refinement
+      (`runs.refine_alert_bounds`, `boundary_split_check.py`)
+- [x] Step 20 — Attack naming: whole-alert plateau test (`plateau_flat_share`), tick-level naming table
+      (`classify.tick_naming`, `report.py`), `naming_split_check.py`. Final: GRU 94.6%, TCN 90.9% of attack alerts named
+      correctly (`results/05_FINAL_gru_tuned.txt`, `results/06_FINAL_tcn_all_tuned.txt`)
+- [ ] Open (documented limits, not planned work): plateau-vs-replay naming on naturally flat signals; drift/replay tick
+      recall (the start of a slow attack has no evidence); mild floods; fuzzing tested on practice attacks only (docs/14
+      section 7)
 
 ## Step 1 — Repo & environment setup
 - `git init` in `c:\Users\sreen\CANIDS` (currently not a git repo) and add a
@@ -295,7 +309,11 @@ docs/13-partner-channel.md.
 
 ## Step 17 — Final summary report
 `report.py` + `scripts/run_evaluation.py` (`--summary-only`): per-attack TP/FP/TN/FN,
-event-level results, attack-type confusion matrix and overall accuracy.
+event-level results, attack-type confusion matrix and overall accuracy (and, since Step 20, attack naming at tick level).
+
+## Steps 18-20 — TCN integration, per-forecaster profiles, attack naming
+See `docs/14-tcn-and-calibration.md` (problem, cause, fixes, tuning protocol, final results, limits, how to reproduce) and
+`results/README.md` (which result file is which run).
 
 ## Testing strategy
 `pytest` unit tests per module under `tests/`, each run against the Step 4

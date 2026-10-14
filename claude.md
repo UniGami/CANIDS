@@ -35,10 +35,10 @@ evidence is.)
   accurate at this scale).
 - Final model: **TCN** (chosen over Transformer — SynCAN's normal-only
   training data is limited, and Transformer has higher overfitting risk at
-  this data scale). **Trained by a teammate (`models/tcn_syncan_train1.pt`, train_1 only) and
-  evaluated through the same pipeline (`--forecaster tcn`); about equal to the GRU
-  after the calibration fix, see `docs/14-tcn-and-calibration.md`. Both models may
-  be retrained on more varied driving by the team.**
+  this data scale). **Trained by a teammate: `models/tcn_syncan_train1.pt` (train_1 only) and
+  `models/tcn_syncan_all.pt` (first 80% of train_1..4, the final TCN). Evaluated through the same pipeline
+  (`--forecaster tcn`) with its own settings file `configs/pipeline_tcn.json`; the tuned TCN finds slightly more
+  attacks than the GRU but names attacks worse (90.9% vs 94.6%), see `docs/14-tcn-and-calibration.md`.**
 - Internal-only sanity check (never reported as a result): naive persistence
   forecaster (predict next = last).
 - No ANN/memory retrieval mechanism. No per-cluster sub-encoders — flat joint
@@ -49,9 +49,10 @@ evidence is.)
   signed forecast residual|), `stale` (ticks since the signal last
   transmitted), `frozen` (length of a run of identical values) and `partner`
   (how far a signal is from what its cross-ID correlation partners imply,
-  `src/canids/relational.py`). ONE threshold is set from normal data (train_1
-  validation + 35-minute train_2 and train_3 slices, `config.DETECTOR_EXTRA_NORMAL_FILES`) so normal traffic raises
-  ~0.1 alerts per minute. This
+  `src/canids/relational.py`). ONE threshold is set from normal data (GRU: train_1
+  validation + 35-minute train_2 and train_3 slices; all-data TCN: the validation tails of train_1..4) so normal traffic
+  raises about 0.03-0.1 alerts per minute (budget, window and yardstick percentile are per-model settings in
+  `configs/pipeline_<model>.json`; the tuned profiles use window 50, 0.03/min, percentile 99.99). This
   replaces the original "OR of independently thresholded per-signal rules" as
   the is-anything-wrong decision (that design saturated: see
   `docs/10-detector.md`, `docs/notes-false-positive-investigation.md`).
@@ -99,8 +100,11 @@ priority order:
    Branch 2's "too many messages" / "values out of range" evidence.
 2. **Suppression** — the staleness channel is above its threshold.
 3. **Plateau** — the frozen-value channel fires, or the signal with the
-   biggest forecast error at the alert's peak has not changed for a whole
-   detector window (catches plateaus on signals that are naturally flat).
+   biggest forecast error has not changed for a whole detector window at
+   `plateau_flat_share` (0.7 in the tuned profiles; 0 = only at the alert's peak
+   tick, the original rule) of the alert's ticks (catches plateaus on signals that
+   are naturally flat; a plateau on such a signal is indistinguishable from a
+   replay of a flat stretch, the main remaining naming error).
 4. **Drift** — some signal moves smoothly in one direction (a straight or
    steadily curving, noise-free line) during the alert or the 360 ticks after
    it (`detector.smooth_one_way`). Relies on SynCAN's drift being a clean
@@ -146,30 +150,37 @@ plateau → drift [CUSUM] → replay [partner residual spikes], with
   "strict precision" requires an alert to lie ≥ 50% inside attacks). Tick-level
   accuracy is not a headline number: ~85% of ticks are normal.
 - Settings were checked with first-half / second-half splits of each attack
-  file (`scripts/detector_split_check.py`, `classify_split_check.py`) and with
-  practice attacks (`scripts/injected_check.py`). The attack-TYPE rules were
-  designed while looking at the real SynCAN attack files, so their accuracy is
-  optimistic as a general claim; the detector's thresholds come from normal
-  data only.
-- Command for the full result with the final summary (confusion counts,
-  event results, attack-type matrix, overall accuracy) at the end:
-  `python -u scripts/run_evaluation.py --attack-source syncan --normal-csv
-  data/raw/syncan_train_1.csv --model-path models/gru_syncan_train1.pt
-  --batch-size 1024 --skip-residual-report` (add `--summary-only` to print
-  only the summary; add `--forecaster tcn` and drop `--model-path` for the TCN).
-  Needs `data/raw/syncan_train_{2,3}_long.csv` (`scripts/extract_normal_slices.py`). `--refine-alerts 0.75 100 50` sharpens
-  alert start/stop in the tick/event tables (tick precision ~0.91 -> ~0.98, recall unchanged; docs/14).
+  file (`scripts/detector_split_check.py`, `classify_split_check.py`,
+  `tune_profile.py`, `naming_split_check.py`, `boundary_split_check.py`) and with
+  practice attacks (`scripts/injected_check.py`). Per-model settings are CHOSEN on
+  first halves and REPORTED on second halves; whole-file numbers of a tuned profile
+  are therefore optimistic. The attack-TYPE rules were designed while looking at the
+  real SynCAN attack files, so their accuracy is optimistic as a general claim; the
+  detector's thresholds come from normal data only.
+- Tables printed by the final summary: (1) tick level per attack, (2) event level per
+  attack, (3) attack-type confusion matrix with per-type and overall accuracy,
+  (4) attack naming at tick level. Result files: `results/` (index in `results/README.md`).
+- Commands for the full result with the final summary (add `--summary-only` to print only the summary):
+  GRU `python -u scripts/run_evaluation.py --attack-source syncan --normal-csv data/raw/syncan_train_1.csv
+  --forecaster gru --profile configs/pipeline_gru_tuned.json --batch-size 1024 --skip-residual-report --summary-only`;
+  TCN the same with `--forecaster tcn` and no `--profile` (uses `configs/pipeline_tcn.json`; add `--device cuda` on a GPU).
+  Needs `data/raw/syncan_train_{2,3}_long.csv` (GRU) and `data/processed/syncan_train_{2,3,4}_val.csv` (TCN), made by
+  `scripts/extract_normal_slices.py` (and `--validation-tails`). Fast experiments from saved forecasts:
+  `scripts/cache_gru_outputs.py`, `summary_from_cache.py`, `tune_profile.py` (docs/14, section 8).
 
 ## Current Implementation Status
 Steps 1–9, 11, 12 and 13 of `PLAN.md` are complete: registry, synthetic data
 generator, preprocessing plumbing, correlation graph, GRU baseline (trained
 and checkpointed), the legacy attribution layer, the windowed detector with
 the partner channel, the attack-type labeller, Branch 2 (rate/plausibility
-limits), fusion, and evaluation/reporting. **Step 10 (TCN) is trained and evaluated** (teammate; `docs/14-tcn-and-calibration.md`).
-Headline real-data results (SynCAN, fused, detector calibrated on train_1 validation + train_2/train_3 slices):
-GRU 537 of 545 attack intervals found, tick-level precision 0.922 / recall 0.913, 571 of 612 attack alerts named
-correctly (93.3%); TCN 539 of 545, 0.913 / 0.916, 560 of 613 (91.4%); flooding 118/118 for both. Known
-gaps: drift tick recall 0.737, mild floods (1.2–1.45× the normal rate) mostly
+limits), fusion, evaluation/reporting, the TCN (teammate), per-forecaster profiles and tuning, alert refinement
+and the attack-naming improvements: **all steps of `PLAN.md` (1-20) are done.** Final real-data results (SynCAN,
+fused, full runs, each model with its own tuned profile; `results/05_FINAL_gru_tuned.txt`,
+`results/06_FINAL_tcn_all_tuned.txt`): GRU 535 of 545 attack intervals found, tick precision / recall / F1
+0.992 / 0.880 / 0.933, 8 false-alarm alerts, 576 of 609 attack alerts named correctly (94.6%); TCN (all train
+files) 540 of 545, 0.975 / 0.923 / 0.949, 11 false-alarm alerts, 571 of 628 (90.9%); flooding and suppression
+118/118 and 122/122 for both. Known gaps: plateau named replay (naturally flat signals), drift and replay tick recall
+(0.68-0.85: the start of a slow attack has no evidence), mild floods (1.2–1.45× the normal rate) mostly
 missed, drift riding on the true signal mislabelled as replay, fuzzing tested
 only on practice attacks. Details and caveats: `docs/10-detector.md`,
 `docs/11-real-data-results.md` (Branch 1 snapshot), `docs/12-branch2.md`,
@@ -189,15 +200,15 @@ covered only by synthetic/practice attacks (`data/synthetic.py`,
 
 ## Tools / Stack
 - Language: Python (models), pptxgenjs (slides, unrelated to pipeline).
-- Models: GRU (implemented), TCN (teammate-trained, `models/tcn_syncan_train1.pt`), Branch 2 has no
+- Models: GRU (implemented), TCN (teammate-trained, `models/tcn_syncan_train1.pt` and `tcn_syncan_all.pt`), Branch 2 has no
   learned model (limits only). scikit-learn is no longer a dependency.
 - Dataset: SynCAN (ETAS/Bosch) — real data on disk under `data/raw/` (see
   above); a schema-matching synthetic generator also exists
   (`src/canids/data/synthetic.py`) for fast iteration/testing without the
   real dataset.
-- Testing: `pytest`, one test file per module under `tests/` (252 tests).
-- Saved artifacts in `models/`: `gru_syncan_train1.pt`,
-  `relational_syncan_train1.json`, `branch2_limits_syncan_train1.json`.
+- Testing: `pytest`, one test file per module under `tests/` (278 tests).
+- Saved artifacts in `models/`: `gru_syncan_train1.pt`, `tcn_syncan_train1.pt`, `tcn_syncan_all.pt`,
+  `relational_syncan_train1.json`, `branch2_limits_syncan_train1.json`; per-model settings in `configs/`.
 
 ## Per-forecaster pipeline profiles
 Every model-specific setting (model path, calibration normal files, window, false-alarm budget, yardstick percentiles,
@@ -206,4 +217,4 @@ the chosen forecaster's file (`--forecaster gru|tcn`, `--profile PATH`). `script
 FIRST halves of the attack files and reports the second halves; see `docs/14-tcn-and-calibration.md`. The all-data TCN is
 `models/tcn_syncan_all.pt`, calibrated on `data/processed/syncan_train_N_val.csv` (`scripts/extract_normal_slices.py
 --validation-tails`). The FINAL SUMMARY also prints attack naming at tick level. Naming settings (`plateau_flat_share`, `incident_gap_ticks`) are part
-of the profile; results with the final profiles: docs/14 (GRU naming 94.1%, TCN 91.0%, whole files).
+of the profile; results with the final profiles: `results/` and docs/14 (GRU naming 94.6%, TCN 90.9%, full runs).

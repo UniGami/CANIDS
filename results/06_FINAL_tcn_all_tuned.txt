@@ -1,0 +1,55 @@
+running the full evaluation (about 12 minutes); only the final summary will be printed...
+
+====================================================================================================
+FINAL SUMMARY -- real SynCAN attack files, TCN forecaster [profile: tcn-all (tuned)], Branch 1 OR Branch 2 (fused), alert start/stop refined (0.75, 100, 50)
+====================================================================================================
+
+1) TICK LEVEL (one tick = 0.01 s): confusion counts per attack file
+
+   attack               TP        FP        TN        FN   precision  recall     F1  accuracy*
+   plateau           70883      2427    374147      2538       0.967   0.965  0.966      0.989
+   drift             45466       346    389489     14695       0.992   0.756  0.858      0.967
+   replay            50188       286    390506      9014       0.994   0.848  0.915      0.979
+   suppression       79414      4884    365396       300       0.942   0.996  0.968      0.988
+   flooding          74038       139    375752        66       0.998   0.999  0.999      1.000
+   --------------------------------------------------------------------------------------------------
+   ALL FILES        319989      8082   1895290     26613       0.975   0.923  0.949      0.985
+   * accuracy = (TP+TN)/all ticks. About 85% of ticks are normal, so it flatters any detector that flags little;
+     read precision / recall / F1 for how well the attacks themselves are found.
+
+2) EVENT LEVEL: each attack interval and each alert counts once
+
+   attack         attacks  found  alerts  false  FA/min   strict prec  recall  strict F1
+   plateau            116    116     131      4   0.064         0.969   1.000      0.984
+   drift               96     92     125      4   0.062         0.960   0.958      0.959
+   replay              93     92     141      0   0.000         0.993   0.989      0.991
+   suppression        122    122     123      1   0.016         0.992   1.000      0.996
+   flooding           118    118     120      2   0.032         0.983   1.000      0.992
+   --------------------------------------------------------------------------------------------------
+   ALL FILES          545    540     640     11   -> 540 of 545 attacks found = 99.1% ; 629 of 640 alerts overlap an attack
+
+3) ATTACK-TYPE CONFUSION MATRIX: rows = what really happened, columns = what the system said
+   (counts alerts that overlap an attack; the last row is alerts that overlap none)
+
+   real attack     suppression      plateau        drift       replay     flooding      fuzzing    correct  accuracy
+   plateau                   0           99            0           26            0            2     99/127     0.780
+   drift                     0            8          107            5            0            0    107/120     0.892
+   replay                    0           12            4          125            0            0    125/141     0.887
+   suppression             122            0            0            0            0            0    122/122     1.000
+   flooding                  0            0            0            0          118            0    118/118     1.000
+   -----------------------------------------------------------------------------------------------------------------
+   false alarm               0            4            0            9            0            0
+
+   OVERALL TYPE ACCURACY (whole dataset): 571 of 628 attack alerts named correctly = 90.9%
+
+4) ATTACK-TYPE ACCURACY AT TICK LEVEL: of each attack's own ticks, how many sit inside an alert named with
+   the right type / a wrong type / no alert at all
+
+   attack         attack ticks  right name  wrong name  not flagged  named right, of flagged
+   plateau               73421       0.809       0.157        0.035                    0.837
+   drift                 60161       0.670       0.086        0.244                    0.887
+   replay                59202       0.711       0.137        0.152                    0.838
+   suppression           79714       0.996       0.000        0.004                    1.000
+   flooding              74104       0.999       0.000        0.001                    1.000
+   ------------------------------------------------------------------------------
+   ALL FILES            346602       0.852       0.072        0.077                    0.923

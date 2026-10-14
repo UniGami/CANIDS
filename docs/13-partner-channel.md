@@ -1,5 +1,7 @@
 # Partner-consistency channel: raising tick-level recall (drift 0.565 -> 0.737)
 
+> **Later update (2026-10-14):** the numbers in this note are the GRU-era snapshot of that step. The final results (both forecasters, per-model tuning, attack naming) are in [14-tcn-and-calibration.md](14-tcn-and-calibration.md) and `../results/`.
+
 **Status:** implemented, on by default (user's decision, see "Criteria"), 250 tests pass.
 Code: `src/canids/relational.py`, `src/canids/detector.py` (the `partner` evidence channel),
 `scripts/fit_relational.py`; fitted model `models/relational_syncan_train1.json`.

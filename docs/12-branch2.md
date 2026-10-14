@@ -1,5 +1,7 @@
 # Step 11-12: Branch 2 (message-rate / plausibility limits) and fusion
 
+> **Later update (2026-10-14):** the numbers in this note are the GRU-era snapshot of that step. The final results (both forecasters, per-model tuning, attack naming) are in [14-tcn-and-calibration.md](14-tcn-and-calibration.md) and `../results/`.
+
 **Status:** implemented and tested (`tests/test_rate_features.py`, `test_rate_limits.py`, `test_fusion.py`,
 `test_classify.py`), run end to end on the five real SynCAN attack files and on practice attacks.
 Fitted limits: `models/branch2_limits_syncan_train1.json` (refit in seconds with `scripts/fit_branch2.py`).
