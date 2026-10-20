@@ -1,0 +1,162 @@
+[
+  {
+    "key": {
+      "can_id": "id1",
+      "slot": 1
+    },
+    "name": "id1_sig1",
+    "signal_index": 0
+  },
+  {
+    "key": {
+      "can_id": "id1",
+      "slot": 2
+    },
+    "name": "id1_sig2",
+    "signal_index": 1
+  },
+  {
+    "key": {
+      "can_id": "id10",
+      "slot": 1
+    },
+    "name": "id10_sig1",
+    "signal_index": 2
+  },
+  {
+    "key": {
+      "can_id": "id10",
+      "slot": 2
+    },
+    "name": "id10_sig2",
+    "signal_index": 3
+  },
+  {
+    "key": {
+      "can_id": "id10",
+      "slot": 3
+    },
+    "name": "id10_sig3",
+    "signal_index": 4
+  },
+  {
+    "key": {
+      "can_id": "id10",
+      "slot": 4
+    },
+    "name": "id10_sig4",
+    "signal_index": 5
+  },
+  {
+    "key": {
+      "can_id": "id2",
+      "slot": 1
+    },
+    "name": "id2_sig1",
+    "signal_index": 6
+  },
+  {
+    "key": {
+      "can_id": "id2",
+      "slot": 2
+    },
+    "name": "id2_sig2",
+    "signal_index": 7
+  },
+  {
+    "key": {
+      "can_id": "id2",
+      "slot": 3
+    },
+    "name": "id2_sig3",
+    "signal_index": 8
+  },
+  {
+    "key": {
+      "can_id": "id3",
+      "slot": 1
+    },
+    "name": "id3_sig1",
+    "signal_index": 9
+  },
+  {
+    "key": {
+      "can_id": "id3",
+      "slot": 2
+    },
+    "name": "id3_sig2",
+    "signal_index": 10
+  },
+  {
+    "key": {
+      "can_id": "id4",
+      "slot": 1
+    },
+    "name": "id4_sig1",
+    "signal_index": 11
+  },
+  {
+    "key": {
+      "can_id": "id5",
+      "slot": 1
+    },
+    "name": "id5_sig1",
+    "signal_index": 12
+  },
+  {
+    "key": {
+      "can_id": "id5",
+      "slot": 2
+    },
+    "name": "id5_sig2",
+    "signal_index": 13
+  },
+  {
+    "key": {
+      "can_id": "id6",
+      "slot": 1
+    },
+    "name": "id6_sig1",
+    "signal_index": 14
+  },
+  {
+    "key": {
+      "can_id": "id6",
+      "slot": 2
+    },
+    "name": "id6_sig2",
+    "signal_index": 15
+  },
+  {
+    "key": {
+      "can_id": "id7",
+      "slot": 1
+    },
+    "name": "id7_sig1",
+    "signal_index": 16
+  },
+  {
+    "key": {
+      "can_id": "id7",
+      "slot": 2
+    },
+    "name": "id7_sig2",
+    "signal_index": 17
+  },
+  {
+    "key": {
+      "can_id": "id8",
+      "slot": 1
+    },
+    "name": "id8_sig1",
+    "signal_index": 18
+  },
+  {
+    "key": {
+      "can_id": "id9",
+      "slot": 1
+    },
+    "name": "id9_sig1",
+    "signal_index": 19
+  }
+]

@@ -36,3 +36,8 @@ report
 .idea/
 .DS_Store
 Thumbs.db
+
+# Large scratch outputs from tuning/diagnostic runs (hundreds of MB; exceed GitHub's 100 MB limit)
+logs/sweep/
+logs/diag/
+demo/prepare.log
