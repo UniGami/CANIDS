@@ -32,6 +32,7 @@ results.txt
 *.npz
 logs/sweep/
 logs/diag/
+report
 
 # Caches / tooling
 .pytest_cache/
