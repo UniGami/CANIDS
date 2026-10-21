@@ -1,0 +1,256 @@
+=====================================================================================================
+REPLAY BRANCH PLAN -- make replay-attack detection and naming excel (TCN, SynCAN)
+=====================================================================================================
+Written 2026-10-21 (hand-over to the teammate who will run Phase 2 on the GPU machine).
+Code base: branch "Sreene" at commit c953852 + the new untracked files listed in section 9.
+This work goes on a NEW branch called "replay". Branch "main" (all attack types) is NOT touched by it;
+on this branch other attack types are allowed to get worse. Only replay matters.
+
+READ THIS FIRST (three rules the owner set)
+  1. Nobody but the owner commits. Suggested commit messages are in section 10.
+  2. Rollback must stay easy. If replay metrics do not reach the bar (section 2), the owner may roll the
+     branch back to the state before this work. Keep new work in NEW files; when an existing file must be
+     edited, say which one and why in the commit message.
+  3. Choose every setting on the FIRST half of the replay file, report the SECOND half (and the practice
+     replay file). Whole-file numbers of a tuned setting are optimistic. No model or threshold is ever
+     fitted on attack labels; attack labels are read only to score.
+
+
+-----------------------------------------------------------------------------------------------------
+1. WHAT "REPLAY" IS HERE, AND HOW THE SYSTEM SEES IT
+-----------------------------------------------------------------------------------------------------
+- Data: data/raw/syncan_test_replay.csv (SynCAN "playback"). 93 attack intervals, each 420-831 ticks
+  (4.2-8.3 s; 1 tick = 0.01 s), at least 21 s apart, about 13% of rows. Ground truth = the Label column
+  (it labels every ID's rows during an attack, so it does not say WHICH signal was replayed).
+- Branch 1 (TCN forecaster -> one detector score per tick = max over signals and channels signed / stale /
+  frozen / partner, one threshold from normal data) decides "something is wrong". Branch 2 (message-rate
+  limits) is irrelevant for replay. Fusion is OR. classify.py then names each alert; "replay" is the
+  label an alert gets when no other rule fires.
+- A replayed signal carries real, believable values from another moment of driving. Its own history looks
+  fine, so a forecaster that mostly reads the signal's own history is only surprised at the start of the
+  attack. The other IDs still describe the TRUE present state, so the attack shows up as a mismatch
+  with them (this is what the "partner" channel does, but only for 12 of 20 signals).
+- Not usable: copies of earlier values. docs/10-detector.md found the replayed values are not repeats of
+  anything in the normal files, and a quick extra probe (20-frame windows, same file) was inconclusive.
+
+
+-----------------------------------------------------------------------------------------------------
+2. TARGETS (owner's bar: replay metrics >= 95%)
+-----------------------------------------------------------------------------------------------------
+Metric (replay file, TCN-all, fused)             baseline   target    stretch
+  tick-level F1                                   0.922      >= 0.95
+  tick-level accuracy                             0.980      (follows F1)   >= 0.99
+  event-level strict F1                           0.973      keep >= 0.95
+  attack intervals found                          92 / 93    93 / 93
+  naming accuracy of alerts on replay attacks     90.5%      >= 95%     99%
+  "replay" label purity (share of alerts named
+     replay that are real replay, all files)      96.9%*     keep >= 95%
+(*measured on the replay file only until the other attack files are cached; see section 7.)
+Honest expectation (from the analysis below): tick F1 0.93 is about the ceiling of post-processing;
+0.95+ needs new evidence (Phase 2). 99% tick accuracy and 99% naming are stretch goals and may not be
+reachable (a replay of a flat signal looks like a plateau).
+
+
+-----------------------------------------------------------------------------------------------------
+3. PHASE 0 -- BASELINE AND SCORECARD  (DONE)
+-----------------------------------------------------------------------------------------------------
+What exists
+  src/canids/replay_eval.py     ReplayScore + score_replay(): tick P/R/F1/accuracy, event found/alerts/false
+                                alarms/strict precision/strict F1, naming, replay-label purity, optional
+                                first-half / second-half span.
+  src/canids/replay_cache.py    fit_from_cache(): fits the detector from cached forecasts exactly as the
+                                final TCN run did (window 50, budget 0.1 alerts/min, signed-scale floor 0.01,
+                                partner channel on, calibrated on train_1 validation + train_2/3/4 validation
+                                tails). score_files(): detector + Branch 2 fused outputs per attack file.
+                                Branch 2 outputs are cached next to the forecasts as <name>_b2.npz.
+  scripts/replay_scorecard.py   prints the replay scorecard for the CURRENT pipeline (whole file / halves).
+
+IMPORTANT correction: results_tcn.txt (repo root) is an OLDER run. The true final Sreene baseline is
+logs/eval_tcn_final.log. The scorecard reproduces it to within a few ticks (TP 53,894 vs 53,896;
+tau 1.866 vs 1.865; tiny differences come from forecasts cached as float32).
+
+BASELINE (use these numbers, reproduced by replay_scorecard.py):
+  replay, whole file   tick P/R/F1 0.934/0.910/0.922, acc 0.9798 | events 92/93, alerts 142 (5 false),
+                       strict precision 0.958, strict F1 0.973 | naming 124/137 = 90.5% (9 -> plateau,
+                       4 -> drift) | replay-label purity 124/128 = 96.9%
+  first half           tick 0.926/0.922/0.924 | events 44/44 | naming 57/65 = 87.7%
+  second half          tick 0.942/0.900/0.920 | events 48/49 | naming 67/72 = 93.1%
+  Raw tick counts (log): TP 53,896  FP 3,800  FN 5,306. practice replay (injected_replay): tick 0.935/0.842/
+  0.886, events 97/100, naming 120/145 = 82.8%.
+
+How to rebuild the forecast cache (the .npz files are git-ignored, so they must be regenerated):
+  python -u scripts/cache_gru_outputs.py data/cache_tcn_all --forecaster tcn \
+      --model-path models/tcn_syncan_all.pt \
+      --normal train2v=data/processed/syncan_train_2_val.csv \
+      --normal train3v=data/processed/syncan_train_3_val.csv \
+      --normal train4v=data/processed/syncan_train_4_val.csv \
+      --extra injected_replay=data/synthetic/injected_replay.csv
+  (this standard call also caches train1_val, train2, normal, plateau, drift, replay, suppression,
+   flooding). Use --skip-existing to resume. On the owner's CPU-only PC this took ~11 min per 450k-tick
+  file (~750 ticks/s); on the GTX 1650 it should be far faster. data/processed/syncan_train_{2,3,4}_val.csv
+  are written by scripts/train_tcn.py; they must exist on the machine.
+  Then:  python scripts/replay_scorecard.py data/cache_tcn_all
+
+
+-----------------------------------------------------------------------------------------------------
+4. DIAGNOSIS (what limits replay today) -- measured on the cache
+-----------------------------------------------------------------------------------------------------
+a) Detection is fast. Onset delay of the first flagged tick: median 4 ticks, 90th percentile 11, max 26.
+   So the 5,308 missed ticks are NOT a slow start.
+b) The misses are concentrated: 17 of 93 attacks hold 4,048 of the 5,308 missed ticks. In those the score
+   peaks early (e.g. event 15: 28.7x the threshold) and then FADES back under the threshold while the
+   attack goes on for hundreds more ticks (a replayed signal soon follows a plausible path, so forecast
+   error vanishes). Two attacks (events 79 and 5, at ticks 375,756 and 31,825) never rise above 0.84x and
+   1.49x the threshold: essentially no evidence.
+c) The extra (false-positive) ticks: 3,642 of 3,793 lie within 120 ticks of an attack = the 50-tick
+   running-mean window keeps the score high after the attack ends (median tail 46 ticks). Only about 150
+   ticks are isolated false alarms (5 false-alarm alerts).
+d) Channels on flagged replay ticks: signed residual 86%, partner 69%, stale 0%, frozen 0%.
+e) In quiet traffic the score already sits at 0.5-0.8x the threshold (the threshold is set just above
+   normal's ceiling), so there is NO headroom to recover a fading attack by lowering a line.
+f) Naming errors (13 of 137): 9 called plateau (blamed signals id6_sig1, id4_sig1, id2_sig1: signals that
+   are flat for 83% / 31% / 64% of normal time, so a replay of a flat stretch looks like a plateau), 4 called
+   drift (a smooth ramp was seen). Earlier naming-rule tuning on main netted ~ -5 alerts: the rule set is
+   at its ceiling.
+g) Partner channel covers 12 of 20 signals (indices 0,2,4,5,6,7,8,10,13,14,18,19; ridge on cross-ID
+   partners, R2 >= 0.95 on held-out normal). The other 8 signals rely only on the TCN's own forecast.
+h) Attack spacing and length (needed for any grouping idea): attacks last 4.2-8.3 s, >= 21.5 s apart.
+
+
+-----------------------------------------------------------------------------------------------------
+5. PHASE 1 -- CHEAP FIXES, NO RETRAINING  (DONE; small gain)
+-----------------------------------------------------------------------------------------------------
+Code: src/canids/replay_post.py (refine_bounds, group_alerts, drop_weak, label_alerts, hysteresis),
+scripts/replay_phase1.py, scripts/replay_detector_grid.py. All settings chosen on the first half.
+
+Results (second half in brackets; baseline in the table above)
+  Alert start/stop refinement (walk back while score > 0.6*tau for <= 50 ticks, trim last 25 ticks;
+  ported from main's runs.refine_alert_bounds):
+      whole file tick P/R/F1 0.963/0.899/0.930, strict F1 0.977, naming 123/137 = 89.8%
+      second half tick F1 0.925 (was 0.920). Precision up, recall down. Uses hindsight: it improves the
+      tick-level scores, not the real-time delay.
+  Dead ends (do not retry the same way):
+   - Drop short & weak incidents to remove false alarms: no setting keeps every first-half attack; short
+     weak alerts include real attacks.
+   - Name each incident once from the union of its alerts (gap 0-1500 ticks): no gain; 0 was chosen.
+   - Hysteresis (keep an alert open while score > beta*tau): beta 0.7 equal/worse; beta <= 0.5 floods the
+     file with false positives (see e) above).
+   - "A plateau holds the value from before, a replay jumps" onset clue: FAILS. Real plateau alerts jump
+     at their start just like replays (median |change| 0.15 in both); SynCAN's plateau holds a new
+     constant value.
+   - Detector window / false-alarm budget grid (window 50/75/100/150 x 0.03/0.1/0.3 alerts per min):
+     the current window 50, 0.1/min is already the best for replay on the first half (refined tick F1
+     0.930). 0.03/min gives 0 false alarms and strict F1 0.989 but loses 2 attacks and tick recall.
+Conclusion of Phase 1: post-processing can reach about tick F1 0.93. New evidence is needed.
+
+
+-----------------------------------------------------------------------------------------------------
+6. PHASE 2 -- A REPLAY-AIMED TCN  (TO DO; needs the GPU machine)
+-----------------------------------------------------------------------------------------------------
+Idea: "cross-ID reconstruction". Train a TCN that predicts one CAN ID's values from the OTHER IDs only,
+with that ID's own values hidden. A replayed ID has believable history but is out of step with the other
+IDs for the whole attack (not only at its start), and the error points at the replayed ID.
+
+6.1 Feasibility gate (do this FIRST, about an hour; stop here if it fails)
+    Fit the masked model briefly (or even a small MLP / ridge on windows of the other IDs) and measure
+    held-out NORMAL accuracy per signal (R2 or error / signal range). Specifically for the 8 signals that
+    have no partner model today. If few of them reach R2 >= ~0.9, the extra evidence will be small:
+    report that and stop. Then, on the 17 weak attacks of section 4b (list them with the scorecard's
+    FN-per-event code, see replay_scorecard or the snippet in section 11) check the reconstruction error
+    stays well above its normal level through the WHOLE attack. If not, stop.
+6.2 Model
+    Same family as src/canids/models/tcn.py (98k parameters, 4 dilated blocks, receptive field 61,
+    sequence length 50, joint (value, staleness) vector, train_1..4 first 80% for fit / last 20% for
+    validation, windows never cross files, same loss recipe). Changes:
+      - input: the usual 50-tick window, but ALL channels of one chosen ID (its values and staleness)
+        are zeroed, plus a one-hot "which ID is hidden" input;
+      - target: that ID's signal values at the window's LAST tick (current-tick reconstruction; align the
+        stored residual to that tick like the existing residual cache); loss only on the hidden ID;
+      - training: pick the hidden ID at random per sample (10 IDs). One network serves all IDs.
+      - inference: 10 passes (one per hidden ID) -> a per-signal reconstruction error for every tick.
+    Put it in a NEW file (e.g. src/canids/models/tcn_xid.py) and a new training script; do not edit tcn.py.
+    Save as models/tcn_xid_syncan_all.pt. Train on normal data only.
+6.3 Plug into the detector as a fifth evidence channel "xid"
+    Like "partner": rolling mean over the detector window of |reconstruction error|, per signal, divided
+    by a per-signal scale from NORMAL data (same percentile policy), kept only for signals whose held-out
+    normal error is small (the analogue of the R2 >= 0.95 gate). Add it through an optional argument so
+    the existing four-channel behaviour is unchanged (src/canids/detector.py evidence_channels /
+    fit_detector / detect; keep the default off; if you must edit detector.py, say so in the commit).
+    Recalibrate the single threshold on the normal files (same 0.1 alerts/min budget, floor 0.01 policy)
+    and check normal false-alarm rate on syncan_test_normal.csv (unseen normal).
+6.4 Evaluate
+    - python scripts/replay_scorecard.py (add the xid cache), first half chosen / second half reported,
+      plus injected_replay.
+    - Success = tick F1 >= 0.95 AND events 93/93 AND naming >= 95% (section 2), with normal false alarms
+      not worse than today.
+    - Look specifically at: missed ticks (5,308 -> below ~2,500), the 17 weak attacks, events 79 and 5.
+    - Re-run the 4 other attack files only for information; they may get worse and that is accepted.
+6.5 Compute estimate
+    The teammate's own log (logs/train_tcn_all.log, GTX 1650): ~208 s per epoch over the 4 files
+    (9,704 steps of 512), 34 epochs. A same-size model should take about 2 h for the full recipe (the
+    log also prints "648.4 min", which looks like wall time including something else; trust the per-epoch
+    time). The owner's CPU-only PC: ~0.32 s per step = ~50 min per epoch, i.e. more than a day for the full
+    recipe, so do NOT run Phase 2 there (a reduced recipe of ~1,500 steps/epoch x 20 epochs is 3-5 h).
+    Inference caching of ~10 files x 10 passes is cheap on a GPU.
+
+
+-----------------------------------------------------------------------------------------------------
+7. PHASE 3 -- NAME REPLAY POSITIVELY  (TO DO after Phase 2)
+-----------------------------------------------------------------------------------------------------
+Today "replay" = "no other rule fired". With the "xid" channel, name replay by what it looks like:
+the cross-ID error is large and concentrated on one ID, the signal is not frozen and shows no smooth
+ramp. Keep suppression / plateau / drift / flooding rules as they are. Try the rule as a new function
+in a new file (replay_post.py or a new module), not by editing classify.py, until it clearly wins.
+Known hard case: a replay of a naturally flat signal (id6_sig1, id4_sig1, id2_sig1) versus a plateau.
+Open question to investigate with the plateau file: where does SynCAN's plateau constant come from
+(arbitrary value or a value that occurs in normal driving)? If xid cannot separate the two, the
+naming ceiling stays near 95-97% and 99% is not reachable.
+Also report "replay" label purity across ALL attack files (needs plateau, drift, suppression, flooding
+cached): any alert in those files named replay is wrong by definition.
+
+
+-----------------------------------------------------------------------------------------------------
+8. PHASE 4 -- FINISH
+-----------------------------------------------------------------------------------------------------
+- Full run on the final pipeline, update this file with the final numbers, note whether the bar was met.
+- If replay is < 95%: do not "tune until it passes". Report the gap and let the owner decide on rollback.
+- Document in docs/ (one new file) what changed and the limits; mention that the attack-naming rules were
+  designed while looking at the real attack files, so their accuracy is optimistic as a general claim.
+
+
+-----------------------------------------------------------------------------------------------------
+9. FILES ADDED SO FAR (all new; nothing existing was edited)
+-----------------------------------------------------------------------------------------------------
+  src/canids/replay_eval.py, src/canids/replay_cache.py, src/canids/replay_post.py
+  scripts/replay_scorecard.py, scripts/replay_phase1.py, scripts/replay_detector_grid.py
+  REPLAY_PLAN.txt (this file)
+  data/cache_tcn_all/      forecast cache -- *.npz are git-ignored (regenerate, section 3). The folder also
+                           holds run_cache.sh, run_cache2.sh and cache*.log written on the owner's PC with
+                           machine-specific paths: do not commit them (delete them) .
+  ROLLBACK = delete the files above (nothing else changed). The line " D python" in `git status` (an empty
+  file called "python" in the repo root) is unrelated.
+
+
+-----------------------------------------------------------------------------------------------------
+10. SUGGESTED COMMIT MESSAGES (for the owner)
+-----------------------------------------------------------------------------------------------------
+  Phase 0/1:  "Add replay scorecard and phase-1 post-processing experiments (cached TCN forecasts)"
+  This plan:  "Add REPLAY_PLAN.txt: replay improvement plan, results so far, phase 2 hand-over"
+  Later:      "Add cross-ID TCN (tcn_xid) and 'xid' evidence channel for replay"
+              "Replay scorecard: results with the xid channel"
+
+
+-----------------------------------------------------------------------------------------------------
+11. HANDY SNIPPETS AND NOTES
+-----------------------------------------------------------------------------------------------------
+- Per-event missed ticks (find the weak attacks): use runs/merge_runs on the replay ground truth
+  (merge gap 100), then for each interval count ~flags & gt (this is how section 4b was found).
+- Evaluation constants: EVENT_MERGE_GAP_TICKS=100, EVENT_ALERT_MERGE_GAP_TICKS=10, EVENT_MIN_COVERAGE=0
+  (src/canids/config.py). Strict precision = alert has >= 50% of its ticks inside attacks.
+- main branch has things NOT ported here on purpose: per-model profile files, tune_profile.py, alert
+  refinement (ported as refine_bounds), incident grouping, a plateau_flat_share naming option. On main the
+  TCN overall naming is 90.9% (this branch's final log: 91.8%); they are different tunings.
+- Cached forecasts are float32; the live pipeline differs from the cache by a few ticks.
+- Existing tests: 269 pass on this branch (python -m pytest -q). The new files have no tests yet; add small
+  ones (replay_eval and replay_post are pure functions of arrays) before the branch is considered done.
+=====================================================================================================
