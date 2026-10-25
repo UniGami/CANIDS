@@ -1,0 +1,28 @@
+Traceback (most recent call last):
+  File "C:\Users\sreen\CANIDS\scripts\cache_gru_outputs.py", line 103, in <module>
+    main()
+  File "C:\Users\sreen\CANIDS\scripts\cache_gru_outputs.py", line 97, in main
+    df = load_attack(p)
+         ^^^^^^^^^^^^^^
+  File "C:\Users\sreen\CANIDS\src\canids\data\loader.py", line 50, in load_attack
+    return load_csv(path)
+           ^^^^^^^^^^^^^^
+  File "C:\Users\sreen\CANIDS\src\canids\data\loader.py", line 26, in load_csv
+    df = pd.read_csv(path)
+         ^^^^^^^^^^^^^^^^^
+  File "C:\Users\sreen\anaconda3\envs\canids\Lib\site-packages\pandas\io\parsers\readers.py", line 873, in read_csv
+    return _read(filepath_or_buffer, kwds)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sreen\anaconda3\envs\canids\Lib\site-packages\pandas\io\parsers\readers.py", line 300, in _read
+    parser = TextFileReader(filepath_or_buffer, **kwds)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sreen\anaconda3\envs\canids\Lib\site-packages\pandas\io\parsers\readers.py", line 1645, in __init__
+    self._engine = self._make_engine(f, self.engine)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sreen\anaconda3\envs\canids\Lib\site-packages\pandas\io\parsers\readers.py", line 1904, in _make_engine
+    self.handles = get_handle(
+                   ^^^^^^^^^^^
+  File "C:\Users\sreen\anaconda3\envs\canids\Lib\site-packages\pandas\io\common.py", line 930, in get_handle
+    handle = open(
+             ^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'data\\synthetic\\injected_replay.csv'

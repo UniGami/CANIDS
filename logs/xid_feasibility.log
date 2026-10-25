@@ -1,0 +1,72 @@
+cross-ID TCN: 101204 params, 10 IDs; fit on 1,242,044 ticks of train_2, select on 310,512
+  step 2000/12000 train=0.018073 val=0.012966 lr=1.0e-03 40s
+  step 4000/12000 train=0.011144 val=0.013023 lr=1.0e-03 79s
+  step 6000/12000 train=0.010539 val=0.013458 lr=1.0e-03 118s
+  step 8000/12000 train=0.009861 val=0.012894 lr=1.0e-03 157s
+  step 10000/12000 train=0.009037 val=0.014745 lr=1.0e-03 197s
+  step 12000/12000 train=0.008476 val=0.014590 lr=1.0e-03 236s
+reconstructed normal: 449,994 ticks
+reconstructed replay: 449,994 ticks
+reconstructed train1_val: 310,469 ticks
+reconstructed train2v: 310,468 ticks
+reconstructed train3v: 310,468 ticks
+reconstructed train4v: 310,470 ticks
+
+A. HELD-OUT NORMAL RECONSTRUCTION (train_1 val, train_3/4 val tails, test normal)
+signal          R2  RMSE/range  partner-model today?   passes gate (R2>=0.9)
+id1_sig1     0.992      0.0136  yes                    KEEP
+id1_sig2     0.632      0.2146  NO                     -
+id10_sig1    0.975      0.0284  yes                    KEEP
+id10_sig2    0.782      0.1490  NO                     -
+id10_sig3    0.997      0.0151  yes                    KEEP
+id10_sig4    0.985      0.0177  yes                    KEEP
+id2_sig1     0.990      0.0156  yes                    KEEP
+id2_sig2     0.984      0.0187  yes                    KEEP
+id2_sig3     0.992      0.0160  yes                    KEEP
+id3_sig1    -0.098      0.3580  NO                     -
+id3_sig2     0.970      0.0274  yes                    KEEP
+id4_sig1     0.978      0.0270  NO                     KEEP
+id5_sig1     0.992      0.0131  NO                     KEEP
+id5_sig2     0.996      0.0166  yes                    KEEP
+id6_sig1     0.996      0.0172  yes                    KEEP
+id6_sig2     0.854      0.1221  NO                     -
+id7_sig1     0.980      0.0216  NO                     KEEP
+id7_sig2     0.633      0.2141  NO                     -
+id8_sig1     0.990      0.0183  yes                    KEEP
+id9_sig1     0.975      0.0284  yes                    KEEP
+
+signals passing the gate: 15/20; of the 8 signals WITHOUT a partner model: 3 pass (['id4_sig1', 'id5_sig1', 'id7_sig1'])
+R2 of the no-partner signals: id1_sig2=0.63, id10_sig2=0.78, id3_sig1=-0.10, id4_sig1=0.98, id5_sig1=0.99, id6_sig2=0.85, id7_sig1=0.98, id7_sig2=0.63
+
+B. xid channel on 15 signals; xid-only threshold 1.417 (calibration alerts/min 0.082; unseen normal file 0.133/min)
+detector tau 1.866; combined max(detector, xid) recalibrated threshold 1.781 (unseen normal file 0.333/min vs detector alone 0.080/min)
+
+Tick / event preview on the replay file (NO start/stop refinement, no first-half selection: a preview only)
+current detector (fused, as today) TP  53894 FP   3793 FN   5308 | P 0.934 R 0.910 F1 0.922 | events 92/93 | alerts 142
+xid channel alone                  TP  46843 FP   2481 FN  12359 | P 0.950 R 0.791 F1 0.863 | events 92/93 | alerts 144
+union: detector OR xid             TP  54616 FP   3891 FN   4586 | P 0.933 R 0.923 F1 0.928 | events 93/93 | alerts 139
+combined single score (recalibrated) TP  54624 FP   3984 FN   4578 | P 0.932 R 0.923 F1 0.927 | events 93/93 | alerts 147
+
+the 17 attacks with most missed ticks hold 4048 of 5308 missed ticks. Per attack (attack ticks / missed by detector / share of attack ticks flagged by xid in 1st half, 2nd half of the attack / missed after union / peak xid score in units of its threshold):
+  event  79 @tick  375756  ticks  649  det-missed  649  xid 1st/2nd half 0.91/1.00  (detector 2nd half 0.00)  union-missed   28  peak   1.9x
+  event   5 @tick   31825  ticks  451  det-missed  411  xid 1st/2nd half 0.00/0.00  (detector 2nd half 0.00)  union-missed  411  peak   0.9x
+  event  62 @tick  295903  ticks  712  det-missed  326  xid 1st/2nd half 0.26/0.64  (detector 2nd half 0.72)  union-missed  326  peak   4.5x
+  event  15 @tick   79792  ticks  823  det-missed  324  xid 1st/2nd half 0.68/0.00  (detector 2nd half 0.33)  union-missed  324  peak   3.7x
+  event  30 @tick  160354  ticks  627  det-missed  316  xid 1st/2nd half 0.52/0.38  (detector 2nd half 0.42)  union-missed  316  peak   4.6x
+  event  91 @tick  437635  ticks  645  det-missed  270  xid 1st/2nd half 0.00/0.90  (detector 2nd half 1.00)  union-missed  270  peak   4.4x
+  event  51 @tick  257985  ticks  711  det-missed  232  xid 1st/2nd half 0.66/0.52  (detector 2nd half 0.63)  union-missed  232  peak   5.6x
+  event  71 @tick  340018  ticks  658  det-missed  229  xid 1st/2nd half 0.52/0.00  (detector 2nd half 0.48)  union-missed  229  peak   2.4x
+  event  55 @tick  270249  ticks  671  det-missed  194  xid 1st/2nd half 0.66/0.62  (detector 2nd half 0.61)  union-missed  173  peak   3.0x
+  event  81 @tick  389546  ticks  669  det-missed  176  xid 1st/2nd half 0.89/0.40  (detector 2nd half 0.55)  union-missed  176  peak   4.9x
+  event  90 @tick  434351  ticks  639  det-missed  154  xid 1st/2nd half 0.94/0.45  (detector 2nd half 0.55)  union-missed  154  peak   2.7x
+  event  34 @tick  178687  ticks  550  det-missed  150  xid 1st/2nd half 0.65/0.67  (detector 2nd half 0.69)  union-missed  150  peak   4.2x
+  event  17 @tick   88350  ticks  829  det-missed  150  xid 1st/2nd half 0.36/1.00  (detector 2nd half 1.00)  union-missed  150  peak   8.0x
+  event  46 @tick  232311  ticks  555  det-missed  140  xid 1st/2nd half 0.91/0.11  (detector 2nd half 0.50)  union-missed  140  peak   2.2x
+  event  22 @tick  119294  ticks  750  det-missed  116  xid 1st/2nd half 0.94/0.40  (detector 2nd half 0.72)  union-missed  116  peak   3.3x
+  event  72 @tick  346650  ticks  662  det-missed  107  xid 1st/2nd half 0.42/0.90  (detector 2nd half 0.94)  union-missed  107  peak   7.9x
+  event  40 @tick  206506  ticks  757  det-missed  104  xid 1st/2nd half 0.53/1.00  (detector 2nd half 1.00)  union-missed  104  peak   5.2x
+weak attacks where xid still flags >= 80% of the second half: 5/17; mean 2nd-half share xid 0.53 vs detector 0.60
+  event 79: detector missed 649, xid peak 1.91x its threshold
+  event 5: detector missed 411, xid peak 0.86x its threshold
+
+missed ticks: detector 5308 -> union 4586 -> combined 4578  (plan: below ~2,500)

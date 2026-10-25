@@ -1,0 +1,11 @@
+train1_val 310469 gt 0 77s
+train2 1552556 gt 0 342s
+normal 449994 gt 0 71s
+plateau 449995 gt 73421 79s
+drift 449996 gt 60161 86s
+replay 449994 gt 59202 71s
+suppression 449994 gt 79714 80s
+flooding 449995 gt 74104 72s
+train2v 310468 gt 0 63s
+train3v 310468 gt 0 58s
+train4v 310470 gt 0 49s

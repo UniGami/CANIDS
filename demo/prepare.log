@@ -1,0 +1,19 @@
+[1/3] signal registry from train_1 ...
+[2/3] 30 s samples (first attack of each real SynCAN test file) ...
+  replay: 12735 rows, 26.6 s
+  plateau: 13206 rows, 27.6 s
+  drift: 13365 rows, 28.0 s
+  suppression: 13141 rows, 28.4 s
+  flooding: 16730 rows, 27.6 s
+  normal: 13375 rows, 28.0 s
+[3/3] detector calibration on normal driving (the slow part) ...
+  tcn: adding normal stream syncan_train_2_val.csv
+  tcn: adding normal stream syncan_train_3_val.csv
+  tcn: adding normal stream syncan_train_4_val.csv
+  tcn: tau=2.222, 207 min of normal traffic, 0.000 alerts/min there -> detector_tcn.json
+  note: syncan_train_2_long.csv not found; calibrating on syncan_train_2_val.csv instead
+  note: syncan_train_3_long.csv not found; calibrating on syncan_train_3_val.csv instead
+  gru: adding normal stream syncan_train_2_val.csv
+  gru: adding normal stream syncan_train_3_val.csv
+  gru: tau=1.834, 155 min of normal traffic, 0.058 alerts/min there -> detector_gru.json
+prepared in 473s
